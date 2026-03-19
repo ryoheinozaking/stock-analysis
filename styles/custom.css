@@ -1,0 +1,22 @@
+/* サイドバー幅固定 */
+section[data-testid="stSidebar"] { min-width: 320px; max-width: 320px; }
+
+/* メトリクスカード */
+[data-testid="stMetric"] {
+    background: #1a1f2e;
+    border-radius: 8px;
+    padding: 12px;
+    border-left: 4px solid #2196f3;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+}
+
+/* スコアバッジ */
+.score-high { background: #27ae60; color: white; padding: 2px 8px; border-radius: 12px; font-weight: bold; }
+.score-mid  { background: #f39c12; color: white; padding: 2px 8px; border-radius: 12px; font-weight: bold; }
+.score-low  { background: #e74c3c; color: white; padding: 2px 8px; border-radius: 12px; font-weight: bold; }
+
+/* ページタイトル */
+h1 { color: #e0e0e0; border-bottom: 2px solid #2196f3; padding-bottom: 8px; }
+
+/* Plotly ツールバーを上にずらして凡例と重ならないようにする */
+.modebar-container { top: -32px !important; }

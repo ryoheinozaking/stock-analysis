@@ -1,0 +1,103 @@
+# -*- coding: utf-8 -*-
+"""
+株式スクリーナー - Streamlit アプリ エントリーポイント
+"""
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
+
+import streamlit as st
+import pandas as pd
+
+st.set_page_config(
+    page_title="株式スクリーナー",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# カスタムCSS読み込み
+css_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "styles", "custom.css")
+if os.path.exists(css_path):
+    with open(css_path, "r", encoding="utf-8") as f:
+        css_content = f.read()
+    st.markdown(f"<style>{css_content}</style>", unsafe_allow_html=True)
+
+# session_state 初期化
+if "selected_code" not in st.session_state:
+    st.session_state["selected_code"] = ""
+if "screening_result" not in st.session_state:
+    st.session_state["screening_result"] = None
+
+# ホーム画面
+st.title("株式スクリーナー")
+st.markdown("J-Quants API v2 を活用した日本株スクリーニング・分析ツールです。")
+st.markdown("---")
+
+# 4ページへのリンクカード
+col1, col2, col3, col4 = st.columns(4)
+
+CARD_STYLE = (
+    "background:#1a1f2e; border-radius:14px; padding:24px;"
+    "border:1px solid #2a3347; border-top:3px solid {color};"
+    "min-height:160px;"
+)
+ICON_STYLE = (
+    "width:42px; height:42px; border-radius:10px;"
+    "background:{color}26; display:inline-flex; align-items:center;"
+    "justify-content:center; font-size:22px; margin-bottom:14px;"
+)
+TITLE_STYLE = "color:#e8eaf0; margin:0 0 8px 0; font-size:1.05rem; font-weight:600;"
+DESC_STYLE  = "color:#7a8499; font-size:0.84rem; line-height:1.6; margin:0;"
+
+cards = [
+    ("pages/1_screening.py", "スクリーニングを開始", "#2196f3", "⚡", "スクリーニング",
+     "PER・PBR・ROE・配当利回り・テクニカル指標などを組み合わせて割安・好業績株をスクリーニングします。"),
+    ("pages/2_stock_detail.py", "銘柄詳細を見る", "#26a69a", "📈", "銘柄詳細",
+     "個別銘柄の株価チャート・財務指標・適時開示情報を一画面で確認できます。"),
+    ("pages/3_disclosures.py", "適時開示を確認", "#ff9800", "📰", "適時開示",
+     "TDnetの適時開示情報を最新順・日付指定・銘柄コード別で検索・閲覧できます。"),
+    ("pages/4_portfolio.py", "ポートフォリオを見る", "#9c27b0", "💹", "ポートフォリオ",
+     "SBI証券のCSVをインポートして保有状況・含み損益・セクター分散をグラフで確認できます。"),
+]
+
+for col, (page, label, color, icon, title, desc) in zip([col1, col2, col3, col4], cards):
+    with col:
+        st.markdown(f"""
+        <div style="{CARD_STYLE.format(color=color)}">
+            <div style="{ICON_STYLE.format(color=color)}">{icon}</div>
+            <h3 style="{TITLE_STYLE}">{title}</h3>
+            <p style="{DESC_STYLE}">{desc}</p>
+        </div>
+        """, unsafe_allow_html=True)
+        st.page_link(page, label=label)
+
+st.markdown("---")
+st.markdown("""
+### 使い方
+1. **スクリーニング**: 左サイドバーで条件を設定し「▶ スクリーニング実行」をクリック
+2. **銘柄詳細**: スクリーニング結果から銘柄を選択、または銘柄コードを直接入力
+3. **適時開示**: 最新ニュース・特定日付・特定銘柄の開示情報を確認
+4. **ポートフォリオ**: SBI証券CSVをインポートして保有状況を可視化
+
+### データソース
+- **株価・財務データ**: [J-Quants API v2](https://jpx-jquants.com/)
+- **適時開示**: [TDnet (Yanoshin)](https://webapi.yanoshin.jp/webapi/tdnet/)
+""")
+
+# サイドバー情報
+st.sidebar.title("📈 株式スクリーナー")
+st.sidebar.markdown("---")
+st.sidebar.markdown("**ナビゲーション**")
+st.sidebar.page_link("app.py", label="ホーム", icon="🏠")
+st.sidebar.page_link("pages/1_screening.py", label="スクリーニング", icon="⚡")
+st.sidebar.page_link("pages/2_stock_detail.py", label="銘柄詳細", icon="📈")
+st.sidebar.page_link("pages/3_disclosures.py", label="適時開示", icon="📰")
+st.sidebar.page_link("pages/4_portfolio.py", label="ポートフォリオ", icon="💹")
+
+if st.session_state.get("selected_code"):
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(f"**選択中の銘柄:** `{st.session_state['selected_code']}`")

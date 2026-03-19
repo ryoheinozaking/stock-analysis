@@ -1,0 +1,22 @@
+# 環境・秘密情報
+.env
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# 出力ファイル
+screening_result_*.csv
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# エディタ
+.vscode/
+.idea/
