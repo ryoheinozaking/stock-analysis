@@ -12,6 +12,7 @@ build/
 
 # 出力ファイル
 screening_result_*.csv
+data/stock_cache.csv
 
 # Jupyter
 .ipynb_checkpoints/
