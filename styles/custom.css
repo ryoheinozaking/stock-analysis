@@ -43,11 +43,11 @@ h1 { color: #e0e0e0; border-bottom: 2px solid #2196f3; padding-bottom: 8px; }
         min-width: 100% !important;
     }
 
-    /* メインコンテンツの左右パディングを縮小 */
+    /* メインコンテンツの左右パディング */
     .block-container {
-        padding-left: 0.75rem !important;
-        padding-right: 0.75rem !important;
-        padding-top: 1rem !important;
+        padding-left: 2rem !important;
+        padding-right: 2rem !important;
+        padding-top: 2rem !important;
     }
 
     /* ボタンをタップしやすく */
