@@ -20,3 +20,48 @@ h1 { color: #e0e0e0; border-bottom: 2px solid #2196f3; padding-bottom: 8px; }
 
 /* Plotly ツールバーを上にずらして凡例と重ならないようにする */
 .modebar-container { top: -32px !important; }
+
+/* ============================================
+   モバイル対応 (max-width: 768px)
+   ============================================ */
+@media (max-width: 768px) {
+    /* タイトルのフォントサイズを縮小 */
+    h1 { font-size: 1.4rem !important; }
+    h2 { font-size: 1.2rem !important; }
+    h3 { font-size: 1.0rem !important; }
+
+    /* サイドバー幅をモバイルに合わせる */
+    section[data-testid="stSidebar"] {
+        min-width: 0 !important;
+        max-width: 80vw !important;
+    }
+
+    /* カラムを縦積みに */
+    [data-testid="column"] {
+        width: 100% !important;
+        flex: 1 1 100% !important;
+        min-width: 100% !important;
+    }
+
+    /* メインコンテンツの左右パディングを縮小 */
+    .block-container {
+        padding-left: 0.75rem !important;
+        padding-right: 0.75rem !important;
+        padding-top: 1rem !important;
+    }
+
+    /* ボタンをタップしやすく */
+    button[kind="primary"], button[kind="secondary"] {
+        min-height: 44px !important;
+    }
+
+    /* データフレームは横スクロール */
+    [data-testid="stDataFrame"] {
+        overflow-x: auto !important;
+    }
+
+    /* メトリクスカードのパディング調整 */
+    [data-testid="stMetric"] {
+        padding: 8px !important;
+    }
+}

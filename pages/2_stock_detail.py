@@ -8,8 +8,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env'))
-
 import streamlit as st
+
+st.set_page_config(layout="wide")
 import pandas as pd
 from datetime import datetime, timedelta
 
@@ -76,7 +77,7 @@ period_days_map = {
     "1ヶ月": 35, "3ヶ月": 100, "6ヶ月": 190, "1年": 370,
     "3年": 1100, "5年": 1830, "10年": 3660,
 }
-# J-Quants Lightプランは過去5年（約1826日）まで
+# J-Quants データ取得期間は過去5年（約1826日）まで
 JQUANTS_LIMIT_DAYS = 1826
 JQUANTS_MIN_DATE = datetime.today() - timedelta(days=JQUANTS_LIMIT_DAYS)
 
@@ -148,7 +149,7 @@ else:
     company_name = code
 
 if clipped:
-    st.info(f"ℹ️ J-Quants Lightプランのデータ取得期間は過去5年までのため、{JQUANTS_MIN_DATE.strftime('%Y/%m/%d')}以降のデータを表示しています。")
+    st.info(f"ℹ️ データ取得期間は過去5年までのため、{JQUANTS_MIN_DATE.strftime('%Y/%m/%d')}以降のデータを表示しています。")
 
 st.markdown("---")
 

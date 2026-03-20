@@ -8,3 +8,5 @@ jquants-api-client
 jupyter==1.1.1
 streamlit>=1.35.0
 plotly>=5.22.0
+anthropic>=0.40.0
+pypdf>=3.0.0

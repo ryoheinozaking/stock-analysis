@@ -10,9 +10,9 @@ import streamlit as st
 def render_disclosure_table(df: pd.DataFrame):
     """
     st.dataframe で開示一覧を表示する
-    - document_url を LinkColumn("PDF") に設定
+    - document_url を 📄 アイコンのリンクに設定
     - pubdate を日時フォーマット
-    - company_code + company_name を結合表示
+    - company_code + company_name を結合表示（4桁コード）
     """
     if df is None or df.empty:
         st.warning("開示データがありません")
@@ -20,7 +20,7 @@ def render_disclosure_table(df: pd.DataFrame):
 
     df_show = df.copy()
 
-    # company_code + company_name を結合
+    # company_code + company_name を結合（4桁表示）
     if "company_code" in df_show.columns and "company_name" in df_show.columns:
         df_show["銘柄"] = df_show["company_code"].astype(str).str[:4] + " " + df_show["company_name"].astype(str)
 
@@ -44,7 +44,9 @@ def render_disclosure_table(df: pd.DataFrame):
 
     if "document_url" in df_show.columns:
         display_cols.append("document_url")
-        col_config["document_url"] = st.column_config.LinkColumn("PDF", width="small")
+        col_config["document_url"] = st.column_config.LinkColumn(
+            "PDF", width="small", display_text="📄"
+        )
 
     df_display = df_show[display_cols] if display_cols else df_show
 

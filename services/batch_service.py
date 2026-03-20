@@ -39,6 +39,7 @@ def _fetch_stock_metrics(code, client, from_date, to_date):
         close = price_df["Close"]
         volume = price_df["Volume"]
         latest_close = float(close.iloc[-1])
+        latest_volume = int(volume.iloc[-1])
         avg_vol = calc_avg_volume(volume)
         rsi = calc_rsi(close)
         ma25 = calc_moving_average(close, 25)
@@ -110,6 +111,7 @@ def _fetch_stock_metrics(code, client, from_date, to_date):
             "RSI": round(rsi, 1) if not np.isnan(rsi) else np.nan,
             "MA25": round(ma25, 1) if not np.isnan(ma25) else np.nan,
             "avg_volume": int(avg_vol),
+            "latest_volume": latest_volume,
         }
     except Exception:
         return None

@@ -9,8 +9,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env'))
-
 import streamlit as st
+
+st.set_page_config(layout="wide")
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
@@ -38,27 +39,22 @@ if "funds_df" not in st.session_state:
     st.session_state["funds_df"] = None
 if "portfolio_updated" not in st.session_state:
     st.session_state["portfolio_updated"] = None
-
-
 # ---- CSVインポート ----
 DOWNLOADS_DIR = os.path.expanduser("~/Downloads")
 SBI_CSV_NAME = "New_file.csv"  # SBI証券の固定ファイル名
-
-
 def _find_latest_sbi_csv():
     """Downloadsフォルダから最新のSBI CSVを探す"""
-    # まず固定ファイル名で検索
-    fixed = os.path.join(DOWNLOADS_DIR, SBI_CSV_NAME)
-    if os.path.exists(fixed):
-        return fixed, os.path.getmtime(fixed)
-    # 見つからなければ直近30分以内のCSVを検索
+    # New_file*.csv（New_file.csv / New_file (1).csv 等）の中で最新のものを返す
+    sbi_candidates = glob.glob(os.path.join(DOWNLOADS_DIR, "New_file*.csv"))
+    if sbi_candidates:
+        latest = max(sbi_candidates, key=os.path.getmtime)
+        return latest, os.path.getmtime(latest)
+    # 見つからなければDownloads内の全CSVから最新を返す
     candidates = glob.glob(os.path.join(DOWNLOADS_DIR, "*.csv"))
     if not candidates:
         return None, None
     latest = max(candidates, key=os.path.getmtime)
     return latest, os.path.getmtime(latest)
-
-
 def _load_csv(file_obj):
     stocks_df, funds_df = parse_sbi_csv(file_obj)
     if not stocks_df.empty:
@@ -73,7 +69,15 @@ def _load_csv(file_obj):
     if not stocks_df.empty: msg.append(f"株式 {len(stocks_df)} 銘柄")
     if not funds_df.empty:  msg.append(f"投資信託 {len(funds_df)} 本")
     st.success("、".join(msg) + "を読み込みました")
-
+# ---- ページ表示時に自動読み込み ----
+if st.session_state["portfolio_df"] is None:
+    latest_path_auto, _ = _find_latest_sbi_csv()
+    if latest_path_auto:
+        try:
+            with open(latest_path_auto, "rb") as f:
+                _load_csv(f)
+        except Exception:
+            pass
 
 with st.sidebar:
     st.header("📂 CSVインポート")
@@ -123,8 +127,6 @@ with st.sidebar:
     st.header("🔧 表示設定")
     show_sector = st.checkbox("セクター情報を表示", value=True)
     sort_by = st.selectbox("並び順", ["評価額（降順）", "損益（降順）", "損益%（降順）", "損益（昇順）"])
-
-
 # ---- データなし ----
 if st.session_state["portfolio_df"] is None:
     st.info("""
@@ -136,8 +138,6 @@ if st.session_state["portfolio_df"] is None:
     SBI証券 → 口座管理 → 保有証券 → CSVダウンロード
     """)
     st.stop()
-
-
 # ---- データ取得 ----
 df = st.session_state["portfolio_df"].copy()
 
@@ -162,8 +162,6 @@ sort_map = {
 }
 sort_col, sort_asc = sort_map[sort_by]
 df = df.sort_values(sort_col, ascending=sort_asc).reset_index(drop=True)
-
-
 # ---- サマリーカード ----
 total_market = df["評価額"].sum()
 total_cost = df["取得総額"].sum()
@@ -182,11 +180,7 @@ with col3:
     st.metric("前日比（概算）", f"¥{total_day_change:+,.0f}", delta=f"{total_day_change_pct:+.2f}%")
 with col4:
     st.metric("保有銘柄数", f"{len(df)} 銘柄")
-
-
 st.divider()
-
-
 # ---- グラフ ----
 col_chart1, col_chart2 = st.columns(2)
 
@@ -237,11 +231,7 @@ with col_chart2:
         )
         fig_acct.update_layout(height=380, margin=dict(l=10, r=10, t=30, b=10))
         st.plotly_chart(fig_acct, use_container_width=True)
-
-
 st.divider()
-
-
 # ---- 損益バー ----
 st.markdown("#### 銘柄別 損益")
 labels = df["code_4"] + " " + df["会社名"].str[:10]
@@ -318,11 +308,7 @@ fig_heatmap.update_layout(
     margin=dict(l=10, r=10, t=30, b=10),
 )
 st.plotly_chart(fig_heatmap, use_container_width=True)
-
-
 st.divider()
-
-
 # ---- 保有明細テーブル ----
 st.markdown("#### 保有明細")
 
@@ -379,8 +365,6 @@ if selection and selection.selection and selection.selection.rows:
         if st.button("📊 詳細チャートを見る", type="primary"):
             st.session_state["selected_code"] = sel_row["code_5"]
             st.switch_page("pages/2_stock_detail.py")
-
-
 # ---- 口座別サマリー ----
 st.divider()
 st.markdown("#### 口座別サマリー")
@@ -401,8 +385,6 @@ st.dataframe(
     use_container_width=True,
     hide_index=True,
 )
-
-
 # ---- 適時開示通知 ----
 st.divider()
 st.markdown("#### 📰 保有銘柄の最新開示")

@@ -13,6 +13,11 @@ build/
 # 出力ファイル
 screening_result_*.csv
 data/stock_cache.csv
+data/ai_analysis.json
+data/ir_summaries.json
+
+# ログ
+streamlit.log
 
 # Jupyter
 .ipynb_checkpoints/

@@ -8,8 +8,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env'))
-
 import streamlit as st
+
+st.set_page_config(layout="wide")
 import pandas as pd
 from datetime import datetime, timedelta
 
@@ -144,10 +145,16 @@ if run_button:
         # ---- キャッシュモード（高速） ----
         df = cache_df.copy()
 
-        # 市場フィルタ
+        # 市場フィルタ（J-Quants MktNm は "プライム"/"スタンダード"/"グロース" の短縮形）
         if market_codes and "market" in df.columns:
-            market_name_map = {"0111": "東証プライム", "0112": "東証スタンダード", "0113": "東証グロース"}
-            target_names = [market_name_map.get(c, c) for c in market_codes]
+            market_name_map = {
+                "0111": ["東証プライム", "プライム"],
+                "0112": ["東証スタンダード", "スタンダード"],
+                "0113": ["東証グロース", "グロース"],
+            }
+            target_names = []
+            for c in market_codes:
+                target_names.extend(market_name_map.get(c, [c]))
             df = df[df["market"].isin(target_names)]
 
         # 条件フィルタ
@@ -250,8 +257,8 @@ if st.session_state["screening_result"] is not None:
         st.warning("条件に合致する銘柄が見つかりませんでした。条件を緩めて再試行してください。")
     else:
         # 追加フィルター
-        if volume_surge and "avg_volume" in result_df.columns:
-            result_df = result_df[result_df["avg_volume"] > int(volume_avg_min) * 2]
+        if volume_surge and "latest_volume" in result_df.columns and "avg_volume" in result_df.columns:
+            result_df = result_df[result_df["latest_volume"] > result_df["avg_volume"] * 2]
         if high_roe and "ROE" in result_df.columns:
             result_df = result_df[result_df["ROE"] > 15]
 
@@ -265,7 +272,7 @@ if st.session_state["screening_result"] is not None:
                     keep.append(False)
                     continue
                 try:
-                    df_52w = get_ohlcv(code_5, to_date_52w, from_date_52w)
+                    df_52w = get_ohlcv(code_5, from_date_52w, to_date_52w)
                     if df_52w.empty:
                         keep.append(False)
                         continue
