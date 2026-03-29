@@ -153,6 +153,8 @@ def _calc_exit_metrics(
     date_e = pd.Timestamp(date_entry)
     date_x = pd.Timestamp(date_exit)
     holding_days = (date_x - date_e).days
+    if holding_days < 0:
+        raise ValueError(f"date_exit ({date_exit}) は date_entry ({date_entry}) より前です")
 
     # MFE/MAE: prices.parquet から保有期間の高値・安値を取得
     max_profit_pct = pnl_pct  # fallback
@@ -161,7 +163,7 @@ def _calc_exit_metrics(
         prices = pd.read_parquet(PRICES_PATH)
         code5  = ticker + "0"
         df = prices[prices["Code"] == code5].copy()
-        df = df[(df["Date"] >= date_entry) & (df["Date"] <= date_exit)]
+        df = df[(df["Date"] >= pd.Timestamp(date_entry)) & (df["Date"] <= pd.Timestamp(date_exit))]
         if not df.empty:
             max_high = df["AdjH"].max()
             min_low  = df["AdjL"].min()
