@@ -1,66 +1,111 @@
-/* サイドバー幅固定 */
+/* ============================================
+   サイドバー
+   ============================================ */
 section[data-testid="stSidebar"] { min-width: 320px; max-width: 320px; }
 
-/* メトリクスカード */
-[data-testid="stMetric"] {
-    background: #1a1f2e;
-    border-radius: 8px;
-    padding: 12px;
-    border-left: 4px solid #2196f3;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+section[data-testid="stSidebar"] > div:first-child {
+    background: #0d1117;
+    border-right: 1px solid #30363d;
 }
 
-/* スコアバッジ */
-.score-high { background: #27ae60; color: white; padding: 2px 8px; border-radius: 12px; font-weight: bold; }
-.score-mid  { background: #f39c12; color: white; padding: 2px 8px; border-radius: 12px; font-weight: bold; }
-.score-low  { background: #e74c3c; color: white; padding: 2px 8px; border-radius: 12px; font-weight: bold; }
+/* ============================================
+   メトリクスカード
+   ============================================ */
+[data-testid="stMetric"] {
+    background: #161b22;
+    border-radius: 8px;
+    padding: 14px 16px;
+    border: 1px solid #30363d;
+    border-left: 3px solid #2196f3;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
 
-/* ページタイトル */
-h1 { color: #e0e0e0; border-bottom: 2px solid #2196f3; padding-bottom: 8px; }
+[data-testid="stMetricLabel"] p { color: #8b949e; font-size: 0.82rem; }
+[data-testid="stMetricValue"]   { color: #e6edf3; font-weight: 700; }
 
-/* Plotly ツールバーを上にずらして凡例と重ならないようにする */
+/* ============================================
+   スコアバッジ
+   ============================================ */
+.score-high {
+    background: linear-gradient(135deg, #27ae60, #1e8449);
+    color: white; padding: 3px 10px; border-radius: 12px;
+    font-weight: bold; font-size: 0.82rem;
+}
+.score-mid {
+    background: linear-gradient(135deg, #f39c12, #d68910);
+    color: white; padding: 3px 10px; border-radius: 12px;
+    font-weight: bold; font-size: 0.82rem;
+}
+.score-low {
+    background: linear-gradient(135deg, #e74c3c, #c0392b);
+    color: white; padding: 3px 10px; border-radius: 12px;
+    font-weight: bold; font-size: 0.82rem;
+}
+
+/* ============================================
+   見出し
+   ============================================ */
+h1 { color: #e6edf3; border-bottom: 2px solid #2196f3; padding-bottom: 8px; margin-bottom: 20px; }
+h2 { color: #e6edf3; }
+h3 { color: #e6edf3; }
+
+/* ============================================
+   タブ
+   ============================================ */
+[data-testid="stTabs"] [role="tab"] {
+    color: #8b949e;
+    font-weight: 500;
+}
+[data-testid="stTabs"] [role="tab"][aria-selected="true"] {
+    color: #e6edf3;
+    border-bottom-color: #2196f3 !important;
+}
+
+/* ============================================
+   データフレーム — 奇数行ストライプ
+   ============================================ */
+[data-testid="stDataFrame"] tbody tr:nth-child(odd) td {
+    background: rgba(255,255,255,0.02) !important;
+}
+
+/* ============================================
+   Plotly ツールバー位置調整
+   ============================================ */
 .modebar-container { top: -32px !important; }
 
 /* ============================================
    モバイル対応 (max-width: 768px)
    ============================================ */
 @media (max-width: 768px) {
-    /* タイトルのフォントサイズを縮小 */
     h1 { font-size: 1.4rem !important; }
     h2 { font-size: 1.2rem !important; }
     h3 { font-size: 1.0rem !important; }
 
-    /* サイドバー幅をモバイルに合わせる */
     section[data-testid="stSidebar"] {
         min-width: 0 !important;
         max-width: 80vw !important;
     }
 
-    /* カラムを縦積みに */
     [data-testid="column"] {
         width: 100% !important;
         flex: 1 1 100% !important;
         min-width: 100% !important;
     }
 
-    /* メインコンテンツの左右パディング */
     .block-container {
         padding-left: 2rem !important;
         padding-right: 2rem !important;
         padding-top: 2rem !important;
     }
 
-    /* ボタンをタップしやすく */
     button[kind="primary"], button[kind="secondary"] {
         min-height: 44px !important;
     }
 
-    /* データフレームは横スクロール */
     [data-testid="stDataFrame"] {
         overflow-x: auto !important;
     }
 
-    /* メトリクスカードのパディング調整 */
     [data-testid="stMetric"] {
         padding: 8px !important;
     }
