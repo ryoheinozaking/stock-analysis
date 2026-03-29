@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import warnings
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -25,6 +26,14 @@ def _empty_df() -> pd.DataFrame:
     return pd.DataFrame(columns=COLUMNS)
 
 
+def _validate_date(date_str: str) -> None:
+    """date_str が日付としてパース可能か検証する。不正な場合は ValueError を送出する。"""
+    try:
+        pd.Timestamp(date_str)
+    except Exception:
+        raise ValueError(f"日付フォーマットが不正です: {date_str!r}")
+
+
 def load() -> pd.DataFrame:
     """trade_log.csv を読み込む。存在しない場合は空のDataFrameを返す。"""
     if not os.path.exists(TRADE_LOG_PATH):
@@ -34,15 +43,24 @@ def load() -> pd.DataFrame:
         for col in COLUMNS:
             if col not in df.columns:
                 df[col] = None
-        return df[COLUMNS]
-    except Exception:
+        # M-3: rule_violation の CSV ラウンドトリップ対応
+        if "rule_violation" in df.columns:
+            df["rule_violation"] = (
+                df["rule_violation"]
+                .map({"True": True, "False": False, True: True, False: False})
+                .fillna(False)
+                .astype(bool)
+            )
+        return df.reindex(columns=COLUMNS)
+    except Exception as e:
+        warnings.warn(f"trade_log.csv 読み込み失敗: {e}", stacklevel=2)
         return _empty_df()
 
 
 def save(df: pd.DataFrame) -> None:
     """DataFrame を trade_log.csv に保存する。"""
     os.makedirs(os.path.dirname(TRADE_LOG_PATH), exist_ok=True)
-    df[COLUMNS].to_csv(TRADE_LOG_PATH, index=False)
+    df.reindex(columns=COLUMNS).to_csv(TRADE_LOG_PATH, index=False)
 
 
 def _get_company_name(ticker: str) -> str:
@@ -58,9 +76,12 @@ def _get_fundamental_metrics(ticker: str):
 
 
 def _calc_exit_metrics(ticker, date_entry, date_exit, entry_price, exit_price):
+    # I-5: ゼロ除算ガード
+    if entry_price == 0:
+        raise ValueError("entry_price が 0 です")
     pnl_pct = (exit_price - entry_price) / entry_price * 100
     holding_days = (pd.Timestamp(date_exit) - pd.Timestamp(date_entry)).days
-    return pnl_pct, holding_days, pnl_pct, pnl_pct  # Task 3 で実装
+    return pnl_pct, holding_days, None, None  # Task 3 で実装
 
 
 def add_entry(
@@ -72,8 +93,15 @@ def add_entry(
     strategy_type: str,
     memo: str = "",
 ) -> pd.DataFrame:
+    # I-4: 日付バリデーション
+    _validate_date(date_entry)
     df = load()
-    new_id = str(int(df["id"].dropna().astype(int).max()) + 1) if not df.empty and df["id"].notna().any() else "1"
+    # I-3: ID生成を読みやすい形式に
+    existing_ids = df["id"].dropna()
+    if df.empty or existing_ids.empty:
+        new_id = "1"
+    else:
+        new_id = str(int(existing_ids.astype(int).max()) + 1)
     company_name = _get_company_name(ticker)
     rsi, vol_ratio = _get_price_metrics(ticker, date_entry)
     pe, pb, rev_growth = _get_fundamental_metrics(ticker)
@@ -98,11 +126,17 @@ def add_exit(
     exit_price: float,
     rule_violation: bool = False,
 ) -> pd.DataFrame:
+    # I-4: 日付バリデーション
+    _validate_date(date_exit)
     df = load()
     idx = df.index[df["id"] == trade_id]
     if len(idx) == 0:
         raise ValueError(f"id={trade_id} が見つかりません")
     i = idx[0]
+    # I-1: 二重決済チェック
+    existing_exit = df.at[i, "date_exit"]
+    if existing_exit is not None and not (isinstance(existing_exit, float) and pd.isna(existing_exit)):
+        raise ValueError(f"id={trade_id} はすでに決済済みです")
     ticker = str(df.at[i, "ticker"])
     date_entry = str(df.at[i, "date_entry"])
     entry_price = float(df.at[i, "entry_price"])
@@ -114,7 +148,7 @@ def add_exit(
     df.at[i, "rule_violation"] = rule_violation
     df.at[i, "pnl_pct"]        = round(pnl_pct, 2)
     df.at[i, "holding_days"]   = holding_days
-    df.at[i, "max_profit_pct"] = round(max_profit_pct, 2)
-    df.at[i, "max_loss_pct"]   = round(max_loss_pct, 2)
+    df.at[i, "max_profit_pct"] = max_profit_pct  # Task 3 で実装（None）
+    df.at[i, "max_loss_pct"]   = max_loss_pct    # Task 3 で実装（None）
     save(df)
     return df
