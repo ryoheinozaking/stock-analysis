@@ -139,7 +139,7 @@ with tab3:
         disp = [c for c in disp if c in closed.columns]
 
         st.dataframe(
-            closed[disp].style.applymap(_color_pnl, subset=["pnl_pct"] if "pnl_pct" in disp else []),
+            closed[disp].style.map(_color_pnl, subset=["pnl_pct"] if "pnl_pct" in disp else []),
             use_container_width=True,
             hide_index=True,
         )
@@ -166,7 +166,7 @@ with tab4:
         c2.metric("勝率", f"{win_rate:.1f}%")
         c3.metric("平均リターン", f"{avg_pnl:+.2f}%")
         c4.metric("プロフィットファクター",
-                  f"{abs(avg_win/avg_loss):.2f}" if avg_loss != 0 else "∞")
+                  f"{abs(avg_win/avg_loss):.2f}" if avg_loss != 0 and not pd.isna(avg_loss) else "∞")
 
         st.divider()
 
