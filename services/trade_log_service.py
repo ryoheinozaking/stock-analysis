@@ -64,15 +64,74 @@ def save(df: pd.DataFrame) -> None:
 
 
 def _get_company_name(ticker: str) -> str:
-    return ticker  # Task 2 で実装
+    """stock_cache.parquet から会社名を取得する。"""
+    try:
+        df = pd.read_parquet(CACHE_PATH)
+        row = df[df["code_4"] == ticker]
+        if not row.empty:
+            return str(row.iloc[0].get("company_name", ticker))
+    except Exception:
+        pass
+    return ticker
 
 
 def _get_price_metrics(ticker: str, date_entry: str):
-    return None, None  # Task 2 で実装
+    """
+    prices.parquet からエントリー日時点の RSI・出来高比率を計算する。
+    取得できない場合は (None, None) を返す。
+    """
+    try:
+        prices = pd.read_parquet(PRICES_PATH)
+        code5  = ticker + "0"
+        df = prices[prices["Code"] == code5].copy()
+        if df.empty:
+            return None, None
+        df = df.sort_values("Date")
+        df = df[df["Date"] <= date_entry].tail(30)
+        if len(df) < 2:
+            return None, None
+
+        # RSI（14日）
+        closes = df["AdjC"].values
+        deltas = np.diff(closes)
+        gains  = np.where(deltas > 0, deltas, 0.0)
+        losses = np.where(deltas < 0, -deltas, 0.0)
+        avg_gain = gains[-14:].mean() if len(gains) >= 14 else gains.mean()
+        avg_loss = losses[-14:].mean() if len(losses) >= 14 else losses.mean()
+        rsi = 100 - (100 / (1 + avg_gain / avg_loss)) if avg_loss > 0 else 100.0
+
+        # 出来高比率（当日 / 20日平均）
+        vols = df["AdjVo"].values
+        latest_vol = vols[-1]
+        avg_vol    = vols[-20:].mean() if len(vols) >= 20 else vols.mean()
+        vol_ratio  = round(latest_vol / avg_vol, 2) if avg_vol > 0 else None
+
+        return round(rsi, 1), vol_ratio
+    except Exception:
+        return None, None
 
 
 def _get_fundamental_metrics(ticker: str):
-    return None, None, None  # Task 2 で実装
+    """
+    stock_cache.parquet から PER・PBR・売上成長率を取得する。
+    取得できない場合は (None, None, None) を返す。
+    """
+    try:
+        df  = pd.read_parquet(CACHE_PATH)
+        row = df[df["code_4"] == ticker]
+        if row.empty:
+            return None, None, None
+        r = row.iloc[0]
+        pe  = r.get("PER") if "PER" in r else None
+        pb  = r.get("PBR") if "PBR" in r else None
+        rev = r.get("rev_growth") if "rev_growth" in r else None
+        return (
+            float(pe)  if pe  is not None and not pd.isna(pe)  else None,
+            float(pb)  if pb  is not None and not pd.isna(pb)  else None,
+            float(rev) if rev is not None and not pd.isna(rev) else None,
+        )
+    except Exception:
+        return None, None, None
 
 
 def _calc_exit_metrics(ticker, date_entry, date_exit, entry_price, exit_price):
