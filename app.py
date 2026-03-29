@@ -54,7 +54,7 @@ TITLE_STYLE = "color:#e6edf3; margin:0 0 8px 0; font-size:1.05rem; font-weight:6
 DESC_STYLE  = "color:#8b949e; font-size:0.84rem; line-height:1.6; margin:0;"
 
 cards = [
-    ("pages/1_screening.py", "スクリーニングを開始", "#2196f3", "⚡", "スクリーニング",
+    ("pages/1_screening.py", "スクリーニングを開始", "#06b6d4", "⚡", "スクリーニング",
      "PER・PBR・ROE・配当利回り・テクニカル指標などを組み合わせて割安・好業績株をスクリーニングします。"),
     ("pages/2_stock_detail.py", "銘柄詳細を見る", "#26a69a", "📈", "銘柄詳細",
      "個別銘柄の株価チャート・財務指標・適時開示情報を一画面で確認できます。"),
