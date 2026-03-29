@@ -38,20 +38,20 @@ st.markdown("J-Quants API v2 を活用した日本株スクリーニング・分
 st.markdown("---")
 
 # 4ページへのリンクカード
-col1, col2, col3, col4, col5 = st.columns(5)
+col1, col2, col3, col4, col5, col6 = st.columns(6)
 
 CARD_STYLE = (
-    "background:#1a1f2e; border-radius:14px; padding:24px;"
-    "border:1px solid #2a3347; border-top:3px solid {color};"
-    "min-height:160px;"
+    "background:#161b22; border-radius:12px; padding:24px;"
+    "border:1px solid #30363d; border-top:3px solid {color};"
+    "min-height:160px; box-shadow:0 2px 8px rgba(0,0,0,0.4);"
 )
 ICON_STYLE = (
     "width:42px; height:42px; border-radius:10px;"
     "background:{color}26; display:inline-flex; align-items:center;"
     "justify-content:center; font-size:22px; margin-bottom:14px;"
 )
-TITLE_STYLE = "color:#e8eaf0; margin:0 0 8px 0; font-size:1.05rem; font-weight:600;"
-DESC_STYLE  = "color:#7a8499; font-size:0.84rem; line-height:1.6; margin:0;"
+TITLE_STYLE = "color:#e6edf3; margin:0 0 8px 0; font-size:1.05rem; font-weight:600;"
+DESC_STYLE  = "color:#8b949e; font-size:0.84rem; line-height:1.6; margin:0;"
 
 cards = [
     ("pages/1_screening.py", "スクリーニングを開始", "#2196f3", "⚡", "スクリーニング",
@@ -64,9 +64,11 @@ cards = [
      "SBI証券のCSVをインポートして保有状況・含み損益・セクター分散をグラフで確認できます。"),
     ("pages/5_portfolio_analysis.py", "AI分析を実行", "#e91e63", "🤖", "AI分析",
      "Claude AIが保有銘柄をファンダ・テクニカル両面から分析し、売買提案とアクションを提示します。"),
+    ("pages/6_trade_log.py", "トレードを記録", "#2e7d32", "📓", "トレードログ",
+     "実トレードを記録・集計し、戦略別勝率・RSI別成績など自己分析データを蓄積します。"),
 ]
 
-for col, (page, label, color, icon, title, desc) in zip([col1, col2, col3, col4, col5], cards):
+for col, (page, label, color, icon, title, desc) in zip([col1, col2, col3, col4, col5, col6], cards):
     with col:
         st.markdown(f"""
         <div style="{CARD_STYLE.format(color=color)}">
@@ -101,6 +103,7 @@ st.sidebar.page_link("pages/2_stock_detail.py", label="銘柄詳細", icon="📈
 st.sidebar.page_link("pages/3_disclosures.py", label="適時開示", icon="📰")
 st.sidebar.page_link("pages/4_portfolio.py", label="ポートフォリオ", icon="💹")
 st.sidebar.page_link("pages/5_portfolio_analysis.py", label="AI分析", icon="🤖")
+st.sidebar.page_link("pages/6_trade_log.py", label="トレードログ", icon="📓")
 
 if st.session_state.get("selected_code"):
     st.sidebar.markdown("---")
