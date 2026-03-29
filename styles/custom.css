@@ -86,7 +86,7 @@ h3 { color: #e6edf3; }
         max-width: 80vw !important;
     }
 
-    [data-testid="column"] {
+    [data-testid="stColumn"] {
         width: 100% !important;
         flex: 1 1 100% !important;
         min-width: 100% !important;
@@ -98,7 +98,7 @@ h3 { color: #e6edf3; }
         padding-top: 2rem !important;
     }
 
-    button[kind="primary"], button[kind="secondary"] {
+    [data-testid^="baseButton-"] {
         min-height: 44px !important;
     }
 
