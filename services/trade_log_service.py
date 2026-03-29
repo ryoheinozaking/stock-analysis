@@ -135,13 +135,42 @@ def _get_fundamental_metrics(ticker: str):
         return None, None, None
 
 
-def _calc_exit_metrics(ticker, date_entry, date_exit, entry_price, exit_price):
+def _calc_exit_metrics(
+    ticker: str,
+    date_entry: str,
+    date_exit: str,
+    entry_price: float,
+    exit_price: float,
+):
+    """
+    エグジット時の統計を計算する。
+    Returns: (pnl_pct, holding_days, max_profit_pct, max_loss_pct)
+    """
     # I-5: ゼロ除算ガード
     if entry_price == 0:
         raise ValueError("entry_price が 0 です")
-    pnl_pct = (exit_price - entry_price) / entry_price * 100
-    holding_days = (pd.Timestamp(date_exit) - pd.Timestamp(date_entry)).days
-    return pnl_pct, holding_days, None, None  # Task 3 で実装
+    pnl_pct      = (exit_price - entry_price) / entry_price * 100
+    date_e = pd.Timestamp(date_entry)
+    date_x = pd.Timestamp(date_exit)
+    holding_days = (date_x - date_e).days
+
+    # MFE/MAE: prices.parquet から保有期間の高値・安値を取得
+    max_profit_pct = pnl_pct  # fallback
+    max_loss_pct   = pnl_pct  # fallback
+    try:
+        prices = pd.read_parquet(PRICES_PATH)
+        code5  = ticker + "0"
+        df = prices[prices["Code"] == code5].copy()
+        df = df[(df["Date"] >= date_entry) & (df["Date"] <= date_exit)]
+        if not df.empty:
+            max_high = df["AdjH"].max()
+            min_low  = df["AdjL"].min()
+            max_profit_pct = (max_high - entry_price) / entry_price * 100
+            max_loss_pct   = (min_low  - entry_price) / entry_price * 100
+    except Exception:
+        pass
+
+    return pnl_pct, holding_days, max_profit_pct, max_loss_pct
 
 
 def add_entry(
@@ -208,7 +237,7 @@ def add_exit(
     df.at[i, "rule_violation"] = rule_violation
     df.at[i, "pnl_pct"]        = round(pnl_pct, 2)
     df.at[i, "holding_days"]   = holding_days
-    df.at[i, "max_profit_pct"] = max_profit_pct  # Task 3 で実装（None）
-    df.at[i, "max_loss_pct"]   = max_loss_pct    # Task 3 で実装（None）
+    df.at[i, "max_profit_pct"] = round(max_profit_pct, 2)
+    df.at[i, "max_loss_pct"]   = round(max_loss_pct, 2)
     save(df)
     return df
