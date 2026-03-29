@@ -87,8 +87,9 @@ def _get_price_metrics(ticker: str, date_entry: str):
         if df.empty:
             return None, None
         df = df.sort_values("Date")
-        df = df[df["Date"] <= date_entry].tail(30)
-        if len(df) < 2:
+        cutoff = pd.Timestamp(date_entry)
+        df = df[df["Date"] <= cutoff].tail(30)
+        if len(df) < 20:
             return None, None
 
         # RSI（14日）
