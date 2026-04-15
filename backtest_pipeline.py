@@ -12,6 +12,7 @@
 ユニバース: 現在のハードフィルター通過銘柄 (~99銘柄)
 """
 
+import bisect
 import os, sys
 import numpy as np
 import pandas as pd
@@ -99,13 +100,16 @@ def _simulate_trade(closes: np.ndarray, entry_idx: int, stop_pct: float, max_hol
 
 def _build_revision_events(fins_df: pd.DataFrame, threshold_pct: float = 20.0) -> dict:
     """
-    fins_cache から上方修正イベントを抽出する。
+    fins_cache.parquet から上方修正イベントを抽出する。
     同一銘柄の連続するFEPS開示を比較し、(new-prev)/|prev|*100 >= threshold_pct の
     開示日を「上方修正日」として記録する。
-    戻り値: {code_5digit_str: [pd.Timestamp, ...]}
+    戻り値: {code_5digit_str: [pd.Timestamp, ...]}  ※ Timestamp リストは昇順ソート済み
+    注意: FEPS > 0 のレコードのみ対象（既にプラス予想の銘柄の上方修正を検出）。
+         マイナス→プラス転換は含まない（別途検証が必要）。
     """
     events: dict = {}
-    work = fins_df.copy()
+    work = fins_df  # fins_df は parquet から直接読んだ新規 DataFrame のため copy 不要
+    work = work.copy()  # 型変換で元 DataFrame を変更しないよう一度だけコピー
     work["DiscDate"] = pd.to_datetime(work["DiscDate"], errors="coerce")
     work["FEPS"]     = pd.to_numeric(work["FEPS"],     errors="coerce")
     # 通期（FY）開示のみを対象とする（四半期間比較による誤検知を防ぐ）
@@ -129,16 +133,21 @@ def _build_revision_events(fins_df: pd.DataFrame, threshold_pct: float = 20.0) -
     return events
 
 
-def _has_revision(revision_events: dict, code: str, date: str, window_days: int) -> bool:
-    """date から window_days 日以内（含む）に上方修正イベントがあれば True を返す。"""
+def _has_revision(revision_events: dict, code: str, entry_date, window_days: int) -> bool:
+    """entry_date から window_days 日以内（含む）に上方修正イベントがあれば True を返す。
+    entry_date は str / numpy.datetime64 / pd.Timestamp のいずれでも可。
+    event_dates は昇順ソート済みを前提に bisect で O(log n) 検索する。
+    """
     if revision_events is None:
         return False
     event_dates = revision_events.get(code, [])
     if not event_dates:
         return False
-    ts     = pd.Timestamp(date)
+    ts     = pd.Timestamp(entry_date)
     cutoff = ts - pd.Timedelta(days=window_days)
-    return any(cutoff <= e <= ts for e in event_dates)
+    lo = bisect.bisect_left(event_dates, cutoff)
+    hi = bisect.bisect_right(event_dates, ts)
+    return lo < hi
 
 
 def _calc_market_condition(prices_df: pd.DataFrame, date: str) -> str:
@@ -253,15 +262,10 @@ def run_backtest(
                     above_ma25 = c > m25
                     rsi_ok     = (not np.isnan(r)) and (BUY_RSI_MIN <= r <= BUY_RSI_MAX)
 
-                    # 上方修正フラグ（日付ごとに変化するため内側ループで評価）
-                    rev_ok = (
-                        use_revision
-                        and _has_revision(revision_events, code, dates[i], revision_window)
-                    )
-
-                    # 上方修正条件チェック
-                    if strategy in ("REVISION", "BUY_REVISION", "BUY_SEPA2_REVISION") and not rev_ok:
-                        continue
+                    # 上方修正条件チェック（上方修正戦略のみ評価し、非該当戦略での無駄な呼び出しを回避）
+                    if strategy in ("REVISION", "BUY_REVISION", "BUY_SEPA2_REVISION"):
+                        if not _has_revision(revision_events, code, dates[i], revision_window):
+                            continue
 
                     if strategy in ("BUY", "BUY_G50", "BUY_SEPA2",
                                     "BUY_REVISION", "BUY_SEPA2_REVISION"):
