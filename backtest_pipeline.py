@@ -131,6 +131,8 @@ def _build_revision_events(fins_df: pd.DataFrame, threshold_pct: float = 20.0) -
 
 def _has_revision(revision_events: dict, code: str, date: str, window_days: int) -> bool:
     """date から window_days 日以内（含む）に上方修正イベントがあれば True を返す。"""
+    if revision_events is None:
+        return False
     event_dates = revision_events.get(code, [])
     if not event_dates:
         return False
