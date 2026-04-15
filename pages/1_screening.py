@@ -219,7 +219,7 @@ _sidebar_section("追加フィルター", color="#334155")
 volume_surge  = st.sidebar.checkbox("出来高急増（平均の2倍以上）", value=False)
 high_roe      = st.sidebar.checkbox("高ROE優先（ROE 15%以上）", value=False)
 near_52w_high = st.sidebar.checkbox("52週高値圏（直近高値の90%以上）", value=False)
-use_revision  = st.sidebar.checkbox("📈 上方修正あり（直近30日・FY+20%以上）", value=False)
+use_revision  = st.sidebar.checkbox("上方修正あり（直近30日・FY+20%以上）", value=False)
 
 # ── モメンタムフィルター ──
 _sidebar_section("モメンタム")
