@@ -323,6 +323,22 @@ with tab2:
                                     unsafe_allow_html=True,
                                 )
                             st.caption(f"💡 {cached.get('investor_action', '')}")
+                            # トーンスコア表示
+                            tb = cached.get("tone_bullish")
+                            tc = cached.get("tone_certainty")
+                            ts = cached.get("tone_surprise")
+                            if any(v is not None for v in [tb, tc, ts]):
+                                def _bar(v):
+                                    v = int(v) if v else 0
+                                    filled = "█" * v + "░" * (10 - v)
+                                    color = "#26a69a" if v >= 7 else "#ff9800" if v >= 4 else "#ef5350"
+                                    return f"<span style='color:{color}; font-family:monospace'>{filled}</span> {v}/10"
+                                st.markdown(
+                                    f"強気度 {_bar(tb)} &nbsp;｜&nbsp; "
+                                    f"確実性 {_bar(tc)} &nbsp;｜&nbsp; "
+                                    f"サプライズ {_bar(ts)}",
+                                    unsafe_allow_html=True,
+                                )
 
                 st.divider()
 # =========================================================
@@ -356,6 +372,9 @@ with tab3:
                 "investor_action": v.get("investor_action", ""),
                 "input_tokens": v.get("input_tokens", 0),
                 "output_tokens": v.get("output_tokens", 0),
+                "tone_bullish": v.get("tone_bullish"),
+                "tone_certainty": v.get("tone_certainty"),
+                "tone_surprise": v.get("tone_surprise"),
             })
 
         # 開示日時降順ソート
@@ -422,5 +441,21 @@ with tab3:
                             unsafe_allow_html=True,
                         )
                     st.caption(f"💡 {e['investor_action']}")
+                    # トーンスコア表示
+                    tb = e.get("tone_bullish")
+                    tc = e.get("tone_certainty")
+                    ts = e.get("tone_surprise")
+                    if any(v is not None for v in [tb, tc, ts]):
+                        def _bar(v):
+                            v = int(v) if v else 0
+                            filled = "█" * v + "░" * (10 - v)
+                            color = "#26a69a" if v >= 7 else "#ff9800" if v >= 4 else "#ef5350"
+                            return f"<span style='color:{color}; font-family:monospace'>{filled}</span> {v}/10"
+                        st.markdown(
+                            f"強気度 {_bar(tb)} &nbsp;｜&nbsp; "
+                            f"確実性 {_bar(tc)} &nbsp;｜&nbsp; "
+                            f"サプライズ {_bar(ts)}",
+                            unsafe_allow_html=True,
+                        )
                     cost = calc_cost(e["input_tokens"], e["output_tokens"])
                     st.caption(f"要約日: {e['saved_at']}　コスト: ${cost:.4f}")

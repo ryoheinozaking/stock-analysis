@@ -4,18 +4,18 @@
 section[data-testid="stSidebar"] { min-width: 320px; max-width: 320px; }
 
 section[data-testid="stSidebar"] > div:first-child {
-    background: #0d1117;
-    border-right: 1px solid #30363d;
+    background: #0f172a;
+    border-right: 1px solid #1e293b;
 }
 
 /* ============================================
    メトリクスカード
    ============================================ */
 [data-testid="stMetric"] {
-    background: #161b22;
+    background: #1e293b;
     border-radius: 8px;
     padding: 14px 16px;
-    border: 1px solid #30363d;
+    border: 1px solid #334155;
     border-left: 3px solid #06b6d4;
     box-shadow: 0 2px 8px rgba(0,0,0,0.4);
 }
@@ -72,6 +72,83 @@ h3 { color: #e6edf3; }
    Plotly ツールバー位置調整
    ============================================ */
 .modebar-container { top: -32px !important; }
+
+/* ============================================
+   プリセットバッジボタン（おすすめ条件）
+   ============================================ */
+/* カードのelement-container: height:0にしてボタンと同一Y座標に揃える */
+section[data-testid="stSidebar"] .element-container:has(.pbm) {
+    height: 0 !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+/* ボタンのelement-container: カードに重なる位置でz-index上位 */
+section[data-testid="stSidebar"] .element-container:has(.pbm) + .element-container {
+    position: relative !important;
+    z-index: 10 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+/* ボタン: 透明で44px、カード全体をクリック可能に */
+section[data-testid="stSidebar"] .element-container:has(.pbm) + .element-container button {
+    opacity: 0 !important;
+    height: 44px !important;
+    min-height: 0 !important;
+    width: 100% !important;
+    cursor: pointer !important;
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    display: block !important;
+}
+/* ホバー: 対応カードのみハイライト（隣接兄弟のhover検知） */
+section[data-testid="stSidebar"] .element-container:has(.pbm):has(+ .element-container:hover) .pbm {
+    border-color: rgba(6,182,212,0.45) !important;
+    background: rgba(6,182,212,0.08) !important;
+}
+
+/* ============================================
+   データ更新ボタン（マーカーdiv非表示）
+   ============================================ */
+section[data-testid="stSidebar"] .element-container:has(.update-btn-anchor) {
+    height: 0 !important;
+    overflow: hidden !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+
+/* ============================================
+   全ボタン共通スタイル
+   ============================================ */
+.stButton > button,
+[data-testid^="baseButton-"] {
+    background-color: #0891b2 !important;
+    border-color: #0891b2 !important;
+    color: white !important;
+    font-weight: 600 !important;
+}
+.stButton > button:hover,
+[data-testid^="baseButton-"]:hover {
+    background-color: #0e7490 !important;
+    border-color: #0e7490 !important;
+    color: white !important;
+}
+.stButton > button:active,
+[data-testid^="baseButton-"]:active {
+    background-color: #0b5d73 !important;
+    border-color: #0b5d73 !important;
+    color: white !important;
+}
+/* プリセット透明ボタンは除外 */
+section[data-testid="stSidebar"] .element-container:has(.pbm) + .element-container button,
+section[data-testid="stSidebar"] .element-container:has(.pbm) + .element-container button:hover,
+section[data-testid="stSidebar"] .element-container:has(.pbm) + .element-container button:active {
+    background-color: transparent !important;
+    border-color: transparent !important;
+    background: transparent !important;
+    border: none !important;
+}
 
 /* ============================================
    モバイル対応 (max-width: 768px)

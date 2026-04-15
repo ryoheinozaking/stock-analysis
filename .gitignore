@@ -16,6 +16,24 @@ data/stock_cache.csv
 data/ai_analysis.json
 data/ir_summaries.json
 
+# データキャッシュ（ローカル生成・Git管理外）
+data/*.parquet
+data/*.csv
+data/*.json
+data/*.txt
+data/backtest_prices/
+data/fins_cache/
+data/deep_analysis/
+data/edinetdb_cache/
+
+# バックアップ・アーカイブ
+backup/
+archive/
+
+# Claude Code / Superpowers
+.claude/
+.superpowers/
+
 # ログ
 streamlit.log
 

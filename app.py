@@ -38,11 +38,11 @@ st.markdown("J-Quants API v2 を活用した日本株スクリーニング・分
 st.markdown("---")
 
 # 4ページへのリンクカード
-col1, col2, col3, col4, col5, col6 = st.columns(6)
+col1, col2, col3, col4, col5 = st.columns(5)
 
 CARD_STYLE = (
-    "background:#161b22; border-radius:12px; padding:24px;"
-    "border:1px solid #30363d; border-top:3px solid {color};"
+    "background:#1e293b; border-radius:12px; padding:24px;"
+    "border:1px solid #334155; border-top:3px solid {color};"
     "min-height:160px; box-shadow:0 2px 8px rgba(0,0,0,0.4);"
 )
 ICON_STYLE = (
@@ -62,13 +62,11 @@ cards = [
      "TDnetの適時開示情報を最新順・日付指定・銘柄コード別で検索・閲覧できます。"),
     ("pages/4_portfolio.py", "ポートフォリオを見る", "#9c27b0", "💹", "ポートフォリオ",
      "SBI証券のCSVをインポートして保有状況・含み損益・セクター分散をグラフで確認できます。"),
-    ("pages/5_portfolio_analysis.py", "AI分析を実行", "#e91e63", "🤖", "AI分析",
-     "Claude AIが保有銘柄をファンダ・テクニカル両面から分析し、売買提案とアクションを提示します。"),
     ("pages/6_trade_log.py", "トレードを記録", "#2e7d32", "📓", "トレードログ",
      "実トレードを記録・集計し、戦略別勝率・RSI別成績など自己分析データを蓄積します。"),
 ]
 
-for col, (page, label, color, icon, title, desc) in zip([col1, col2, col3, col4, col5, col6], cards):
+for col, (page, label, color, icon, title, desc) in zip([col1, col2, col3, col4, col5], cards):
     with col:
         st.markdown(f"""
         <div style="{CARD_STYLE.format(color=color)}">
@@ -86,7 +84,7 @@ st.markdown("""
 2. **銘柄詳細**: スクリーニング結果から銘柄を選択、または銘柄コードを直接入力
 3. **適時開示**: 最新ニュース・特定日付・特定銘柄の開示情報を確認
 4. **ポートフォリオ**: SBI証券CSVをインポートして保有状況を可視化
-5. **AI分析**: Claude AIによるポートフォリオ分析・売買提案
+5. **トレードログ**: 実トレードを記録・集計して自己分析データを蓄積
 
 ### データソース
 - **株価・財務データ**: [J-Quants API v2](https://jpx-jquants.com/)
@@ -102,7 +100,6 @@ st.sidebar.page_link("pages/1_screening.py", label="スクリーニング", icon
 st.sidebar.page_link("pages/2_stock_detail.py", label="銘柄詳細", icon="📈")
 st.sidebar.page_link("pages/3_disclosures.py", label="適時開示", icon="📰")
 st.sidebar.page_link("pages/4_portfolio.py", label="ポートフォリオ", icon="💹")
-st.sidebar.page_link("pages/5_portfolio_analysis.py", label="AI分析", icon="🤖")
 st.sidebar.page_link("pages/6_trade_log.py", label="トレードログ", icon="📓")
 
 if st.session_state.get("selected_code"):

@@ -88,18 +88,17 @@ def get_portfolio_codes() -> List[str]:
 
 
 def get_screening_top_codes(n: int = 50) -> List[str]:
-    """stock_cache.csvからスコア上位n銘柄の4桁コードを返す。"""
+    """stock_cache.parquetからスコア上位n銘柄の4桁コードを返す。"""
     try:
         cache_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "data", "stock_cache.csv"
+            "data", "stock_cache.parquet"
         )
         if not os.path.exists(cache_path):
             return []
-        df = pd.read_csv(cache_path, dtype=str)
+        df = pd.read_parquet(cache_path)
         if "score" not in df.columns or "code_4" not in df.columns:
             return []
-        df["score"] = pd.to_numeric(df["score"], errors="coerce")
         top = df.nlargest(n, "score")
         return top["code_4"].dropna().astype(str).tolist()
     except Exception:
@@ -107,15 +106,15 @@ def get_screening_top_codes(n: int = 50) -> List[str]:
 
 
 def get_prime_codes() -> set:
-    """stock_cache.csvからプライム市場銘柄の4桁コードをsetで返す。"""
+    """stock_cache.parquetからプライム市場銘柄の4桁コードをsetで返す。"""
     try:
         cache_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "data", "stock_cache.csv"
+            "data", "stock_cache.parquet"
         )
         if not os.path.exists(cache_path):
             return set()
-        df = pd.read_csv(cache_path, dtype=str)
+        df = pd.read_parquet(cache_path)
         if "market" not in df.columns or "code_4" not in df.columns:
             return set()
         prime = df[df["market"] == "プライム"]

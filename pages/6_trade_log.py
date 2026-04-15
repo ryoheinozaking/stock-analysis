@@ -22,13 +22,29 @@ with tab1:
     st.subheader("新規エントリー記録")
     prefill_ticker = st.session_state.pop("prefill_ticker", "")
     prefill_name   = st.session_state.pop("prefill_name", "")
+    prefill_target = st.session_state.pop("prefill_target", None)
+    prefill_memo   = st.session_state.pop("prefill_memo", "")
+    prefill_url    = st.session_state.pop("prefill_url", "")
+
+    if prefill_name:
+        parts = []
+        if prefill_target:
+            stop_suggested = int(prefill_target * 0.85)
+            parts.append(f"目標株価: **{int(prefill_target):,}円**")
+            parts.append(f"損切りライン(-15%): **{stop_suggested:,}円**")
+        if prefill_memo:
+            parts.append(f"メモ: {prefill_memo}")
+        info_md = f"📌 **{prefill_name}** のウォッチリスト情報"
+        if parts:
+            info_md += "\n\n" + "　｜　".join(parts)
+        if prefill_url:
+            info_md += f"　｜　[🔗 深層分析を見る]({prefill_url})"
+        st.info(info_md)
 
     with st.form("entry_form"):
         col1, col2 = st.columns(2)
         with col1:
             ticker       = st.text_input("銘柄コード（4桁）", value=prefill_ticker, placeholder="例: 7203")
-            if prefill_name:
-                st.caption(f"📌 {prefill_name} からの引き継ぎ")
             date_entry   = st.date_input("エントリー日", value=date.today())
             entry_price  = st.number_input("エントリー価格（円）", min_value=0.0, step=1.0)
             stop_price   = st.number_input("損切りライン（円）", min_value=0.0, step=1.0)
