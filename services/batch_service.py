@@ -193,8 +193,7 @@ def _fetch_fins_all(progress_callback=None):
             d  = _get("/fins/summary", {"code": code})
             df = pd.DataFrame(d.get("data", []))
             if not df.empty:
-                # 全種別（FY/1Q/2Q/3Q）・直近5件
-                df = df.sort_values("DiscDate", ascending=False).head(5)
+                # 全種別（FY/1Q/2Q/3Q）・全件保存（上方修正検出のため履歴が必要）
                 all_fins.append(df)
         except Exception:
             pass

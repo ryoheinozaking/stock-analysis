@@ -14,8 +14,8 @@ load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 from services.batch_service import _get, PRICES_PATH
 
-FROM_DATE = "2023-01-01"
-TO_DATE   = "2025-11-24"   # 既存データ開始日の前日
+FROM_DATE = "2021-01-01"
+TO_DATE   = "2022-12-31"   # 既存データ（2023-01〜）の前日まで
 
 def main():
     print(f"歴史データ取得: {FROM_DATE} 〜 {TO_DATE}")

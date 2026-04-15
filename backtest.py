@@ -5,6 +5,7 @@
 損切り比較: -8% / -15% / なし
 """
 
+import bisect
 import os
 import sys
 import time
@@ -33,6 +34,42 @@ COST_PCT       = 0.2
 PRICE_DIR      = Path("data/backtest_prices")
 MIN_HIST_ROWS  = 400   # MA200+バックテスト期間として最低必要な行数
 # ─────────────────────────────────────────────────────
+
+
+def _build_revision_events(fins_df: pd.DataFrame, threshold_pct: float = 20.0) -> dict:
+    """fins_cache から上方修正イベントを抽出。{code_5digit: [Timestamp, ...]}"""
+    events: dict = {}
+    work = fins_df.copy()
+    work["DiscDate"] = pd.to_datetime(work["DiscDate"], errors="coerce")
+    work["FEPS"]     = pd.to_numeric(work["FEPS"],     errors="coerce")
+    if "CurPerType" in work.columns:
+        work = work[work["CurPerType"] == "FY"]
+    valid = work.dropna(subset=["DiscDate", "FEPS"]).query("FEPS > 0")
+    for code, grp in valid.groupby("Code"):
+        grp = grp.sort_values("DiscDate").reset_index(drop=True)
+        dates = []
+        for i in range(1, len(grp)):
+            prev = float(grp.loc[i - 1, "FEPS"])
+            curr = float(grp.loc[i,     "FEPS"])
+            if prev > 0 and (curr - prev) / abs(prev) * 100 >= threshold_pct:
+                dates.append(grp.loc[i, "DiscDate"])
+        if dates:
+            events[str(code).zfill(5)] = dates
+    return events
+
+
+def _has_revision(revision_events: dict, code: str, entry_date, window_days: int) -> bool:
+    """entry_date から window_days 日以内に上方修正イベントがあれば True。"""
+    if revision_events is None:
+        return False
+    event_dates = revision_events.get(code, [])
+    if not event_dates:
+        return False
+    ts     = pd.Timestamp(entry_date)
+    cutoff = ts - pd.Timedelta(days=window_days)
+    lo = bisect.bisect_left(event_dates, cutoff)
+    hi = bisect.bisect_right(event_dates, ts)
+    return lo < hi
 
 
 def load_universe():
@@ -67,7 +104,7 @@ def fetch_price(code, client):
     return df
 
 
-def calc_signals(df):
+def calc_signals(df, revision_events=None):
     close  = pd.to_numeric(df["Close"],  errors="coerce")
     volume = pd.to_numeric(df["Volume"], errors="coerce").fillna(0)
 
@@ -124,6 +161,16 @@ def calc_signals(df):
         "GranG1"    : gran_g1.values,
         "GranG2"    : gran_g2.values,
     }, index=df["Date"].values)
+
+    # 上方修正シグナル（fins_cache がある場合のみ追加）
+    if revision_events is not None:
+        code = str(df["Code"].iloc[0]).zfill(5) if "Code" in df.columns else ""
+        for w in [30, 60, 90]:
+            col = f"REVISION_{w}"
+            sig_df[col] = [
+                _has_revision(revision_events, code, d, w)
+                for d in sig_df.index
+            ]
 
     # バックテスト開始日以降のみ対象
     bt_from = pd.Timestamp(BACKTEST_FROM)
@@ -198,9 +245,20 @@ def main():
     client   = JQuantsClient()
     universe = load_universe()
 
-    signals     = ["GC", "NewHigh52W", "VolSurge", "MACDCross", "Combo2+", "SEPA2", "GranG1", "GranG2"]
-    all_records = []
-    fetch_count = 0
+    # fins_cache 読み込み（上方修正シグナル用）
+    fins_path = Path("data/fins_cache.parquet")
+    revision_events = None
+    if fins_path.exists():
+        fins_df = pd.read_parquet(fins_path)
+        revision_events = _build_revision_events(fins_df)
+        rev_total = sum(len(v) for v in revision_events.values())
+        logger.info(f"上方修正イベント: {len(revision_events)} 銘柄 / {rev_total} 件")
+
+    base_signals = ["GC", "NewHigh52W", "VolSurge", "MACDCross", "Combo2+", "SEPA2", "GranG1", "GranG2"]
+    rev_signals  = ["REVISION_30", "REVISION_60", "REVISION_90"] if revision_events else []
+    signals      = base_signals + rev_signals
+    all_records  = []
+    fetch_count  = 0
 
     for i, code in enumerate(universe, 1):
         df = fetch_price(code, client)
@@ -210,8 +268,13 @@ def main():
         if fetch_count > 0 and fetch_count % 50 == 0:
             logger.info(f"Fetched {fetch_count} stocks from API so far")
 
+        # Code列を付与（revision_events の照合用）
+        if "Code" not in df.columns:
+            df = df.copy()
+            df["Code"] = code
+
         try:
-            sig_df = calc_signals(df)
+            sig_df = calc_signals(df, revision_events)
         except Exception as e:
             logger.warning(f"Signal error {code}: {e}")
             continue

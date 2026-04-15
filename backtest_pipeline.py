@@ -513,7 +513,7 @@ def main():
     print("  結果⑤ 上方修正フィルター戦略 × 窓期間比較（保有30日・損切り-15%・利確25%）")
     print("=" * 70)
     if df_rev.empty:
-        print("  ⚠ トレード記録なし（fins_cache にデータがない可能性）")
+        print("  [!] トレード記録なし（fins_cache にデータがない可能性）")
     else:
         rows = []
         for strategy in ["REVISION", "BUY_REVISION", "BUY_SEPA2_REVISION"]:
@@ -527,7 +527,7 @@ def main():
                 ]
                 if grp.empty:
                     continue
-                note = "⚠ 少" if len(grp) < 100 else ""
+                note = "[!] 少" if len(grp) < 100 else ""
                 rows.append({
                     "戦略":        strategy,
                     "窓期間(日)":  window,
@@ -540,7 +540,7 @@ def main():
         if rows:
             _print_comparison("", rows)
         else:
-            print("  ⚠ 該当データなし")
+            print("  [!] 該当データなし")
 
     # ── 参考: BUY_SEPA2（既存）と並べて比較 ─────────────────────────
     print("\n--- 参考: BUY_SEPA2（既存・保有30日・損切り-15%・利確25%・弱気含む）---")
