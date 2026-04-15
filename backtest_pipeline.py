@@ -176,6 +176,8 @@ def run_backtest(
     max_hold: int = 20,
     skip_bear: bool = False,
     target_pct: float = 0.25,
+    revision_events: dict = None,
+    revision_window: int = None,
 ) -> pd.DataFrame:
     """
     メインのバックテストループ。
@@ -186,6 +188,8 @@ def run_backtest(
     max_hold:          最大保有日数
     skip_bear:         True の場合、地合い「弱気」の日はエントリーしない
     target_pct:        利確ターゲット（デフォルト 0.25 = +25%）
+    revision_events:   {code: [Timestamp, ...]} の辞書（_build_revision_events の戻り値）
+    revision_window:   上方修正イベントを有効とみなす遡及日数（None = 上方修正戦略を使わない）
     """
     # 地合いキャッシュ（日付→状態）
     all_dates = sorted(prices_df["Date"].unique())
@@ -193,7 +197,10 @@ def run_backtest(
     for d in all_dates:
         market_cache[d] = _calc_market_condition(prices_df, d)
 
+    use_revision = (revision_events is not None) and (revision_window is not None)
     STRATEGIES = ["ALL", "BUY", "BUY_G50", "ALL_G50", "SEPA2", "BUY_SEPA2"]
+    if use_revision:
+        STRATEGIES += ["REVISION", "BUY_REVISION", "BUY_SEPA2_REVISION"]
 
     records = []
     n = len(universe_codes)
@@ -219,7 +226,7 @@ def run_backtest(
             for strategy in STRATEGIES:
                 if strategy in ("BUY_G50", "ALL_G50") and not g50:
                     continue
-                if strategy in ("SEPA2", "BUY_SEPA2") and not is_sepa2:
+                if strategy in ("SEPA2", "BUY_SEPA2", "BUY_SEPA2_REVISION") and not is_sepa2:
                     continue
 
                 last_entry = -max_hold - 1
@@ -244,27 +251,39 @@ def run_backtest(
                     above_ma25 = c > m25
                     rsi_ok     = (not np.isnan(r)) and (BUY_RSI_MIN <= r <= BUY_RSI_MAX)
 
-                    if strategy in ("BUY", "BUY_G50", "BUY_SEPA2"):
+                    # 上方修正フラグ（日付ごとに変化するため内側ループで評価）
+                    rev_ok = (
+                        use_revision
+                        and _has_revision(revision_events, code, dates[i], revision_window)
+                    )
+
+                    # 上方修正条件チェック
+                    if strategy in ("REVISION", "BUY_REVISION", "BUY_SEPA2_REVISION") and not rev_ok:
+                        continue
+
+                    if strategy in ("BUY", "BUY_G50", "BUY_SEPA2",
+                                    "BUY_REVISION", "BUY_SEPA2_REVISION"):
                         if not (above_ma25 and rsi_ok):
                             continue
-                    # ALL / ALL_G50 / SEPA2: 価格条件なし
+                    # ALL / ALL_G50 / SEPA2 / REVISION: 価格条件なし
 
                     trade = _simulate_trade(closes, i, stop_pct, max_hold, target_pct)
                     if np.isnan(trade["return_pct"]):
                         continue
 
                     records.append({
-                        "code":         code,
-                        "entry_date":   dates[i],
-                        "strategy":     strategy,
-                        "stop_pct":     stop_pct,
-                        "max_hold":     max_hold,
-                        "target_pct":   target_pct,
-                        "skip_bear":    skip_bear,
-                        "return_pct":   round(trade["return_pct"] * 100, 3),
-                        "win":          trade["return_pct"] > 0,
-                        "exit_reason":  trade["exit_reason"],
-                        "market":       mkt,
+                        "code":             code,
+                        "entry_date":       dates[i],
+                        "strategy":         strategy,
+                        "stop_pct":         stop_pct,
+                        "max_hold":         max_hold,
+                        "target_pct":       target_pct,
+                        "skip_bear":        skip_bear,
+                        "revision_window":  revision_window,
+                        "return_pct":       round(trade["return_pct"] * 100, 3),
+                        "win":              trade["return_pct"] > 0,
+                        "exit_reason":      trade["exit_reason"],
+                        "market":           mkt,
                     })
                     last_entry = i
 
