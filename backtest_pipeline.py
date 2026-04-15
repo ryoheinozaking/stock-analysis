@@ -108,6 +108,9 @@ def _build_revision_events(fins_df: pd.DataFrame, threshold_pct: float = 20.0) -
     work = fins_df.copy()
     work["DiscDate"] = pd.to_datetime(work["DiscDate"], errors="coerce")
     work["FEPS"]     = pd.to_numeric(work["FEPS"],     errors="coerce")
+    # 通期（FY）開示のみを対象とする（四半期間比較による誤検知を防ぐ）
+    if "CurPerType" in work.columns:
+        work = work[work["CurPerType"] == "FY"]
     valid = work.dropna(subset=["DiscDate", "FEPS"]).query("FEPS > 0")
 
     for code, grp in valid.groupby("Code"):
