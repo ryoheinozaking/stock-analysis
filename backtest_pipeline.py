@@ -323,7 +323,7 @@ def _print_comparison(label: str, rows: list):
 
 def main():
     print("=" * 70)
-    print("  パイプライン バックテスト v3（弱気フィルター + 利確ターゲット検証）")
+    print("  パイプライン バックテスト v4（上方修正フィルター追加）")
     print("=" * 70)
 
     # ── データ読み込み ─────────────────────────────────────────
@@ -347,6 +347,12 @@ def main():
         sepa2_set = set(scored[scored["sepa_stage"] == 2]["code"].astype(str).tolist())
     g50_count = sum(1 for v in profit_growth_map.values() if v and not np.isnan(float(v)) and float(v) > 50)
     print(f"    ユニバース: {len(universe)} 銘柄 / SEPA2: {len(sepa2_set)} 銘柄 / 利益成長>50%: {g50_count} 銘柄")
+
+    # fins_cache 読み込み（上方修正イベント構築用）
+    fins_df = pd.read_parquet("data/fins_cache.parquet")
+    revision_events = _build_revision_events(fins_df)
+    rev_total = sum(len(v) for v in revision_events.values())
+    print(f"    上方修正イベント: {len(revision_events)} 銘柄 / {rev_total} 件（閾値+20%）")
 
     # ── バックテスト実行 ──────────────────────────────────────
     # 検証軸: 弱気フィルター(on/off) × 利確ターゲット × 保有期間
@@ -378,6 +384,22 @@ def main():
     if df_all.empty:
         print("トレード記録なし。終了。")
         return
+
+    # ── 上方修正バックテスト（窓期間 30 / 60 / 90 日）─────────────────
+    REVISION_WINDOWS = [30, 60, 90]
+    rev_records = []
+    print(f"\n[3] 上方修正バックテスト実行中（{len(REVISION_WINDOWS)}窓期間 × 保有30日）...")
+    for window in REVISION_WINDOWS:
+        print(f"  窓期間 {window}日...")
+        df_r = run_backtest(
+            prices_df, universe, profit_growth_map, sepa2_set,
+            max_hold=30, skip_bear=False, target_pct=0.25,
+            revision_events=revision_events, revision_window=window,
+        )
+        rev_records.append(df_r)
+
+    df_rev = pd.concat(rev_records, ignore_index=True) if rev_records else pd.DataFrame()
+    print(f"    上方修正系トレード記録: {len(df_rev)} 件")
 
     # ── 結果① BUY_SEPA2 × 弱気フィルター比較（保有30日・利確25%） ──
     print("\n" + "=" * 70)
@@ -482,8 +504,57 @@ def main():
             })
     _print_comparison("", rows)
 
+    # ── 結果⑤ 上方修正フィルター戦略 × 窓期間比較 ───────────────────
+    print("\n" + "=" * 70)
+    print("  結果⑤ 上方修正フィルター戦略 × 窓期間比較（保有30日・損切り-15%・利確25%）")
+    print("=" * 70)
+    if df_rev.empty:
+        print("  ⚠ トレード記録なし（fins_cache にデータがない可能性）")
+    else:
+        rows = []
+        for strategy in ["REVISION", "BUY_REVISION", "BUY_SEPA2_REVISION"]:
+            for window in REVISION_WINDOWS:
+                grp = df_rev[
+                    (df_rev["strategy"]        == strategy) &
+                    (df_rev["revision_window"] == window)   &
+                    (df_rev["stop_pct"]        == 0.15)     &
+                    (df_rev["max_hold"]        == 30)       &
+                    (df_rev["target_pct"]      == 0.25)
+                ]
+                if grp.empty:
+                    continue
+                note = "⚠ 少" if len(grp) < 100 else ""
+                rows.append({
+                    "戦略":        strategy,
+                    "窓期間(日)":  window,
+                    "件数":        len(grp),
+                    "勝率(%)":    round(grp["win"].mean() * 100, 1),
+                    "平均R(%)":   round(grp["return_pct"].mean(), 2),
+                    "中央値R(%)": round(grp["return_pct"].median(), 2),
+                    "※":          note,
+                })
+        if rows:
+            _print_comparison("", rows)
+        else:
+            print("  ⚠ 該当データなし")
+
+    # ── 参考: BUY_SEPA2（既存）と並べて比較 ─────────────────────────
+    print("\n--- 参考: BUY_SEPA2（既存・保有30日・損切り-15%・利確25%・弱気含む）---")
+    ref = df_all[
+        (df_all["strategy"]   == "BUY_SEPA2") &
+        (df_all["max_hold"]   == 30) &
+        (df_all["stop_pct"]   == 0.15) &
+        (df_all["target_pct"] == 0.25) &
+        (df_all["skip_bear"]  == False)
+    ]
+    if not ref.empty:
+        print(f"  件数: {len(ref)} / 勝率: {ref['win'].mean()*100:.1f}% / 平均R: {ref['return_pct'].mean():.2f}% / 中央値R: {ref['return_pct'].median():.2f}%")
+
     # ── CSV保存 ──────────────────────────────────────────────
     df_all.to_csv("data/backtest_pipeline_records.csv", index=False, encoding="utf-8-sig")
+    if not df_rev.empty:
+        df_rev.to_csv("data/backtest_revision_records.csv", index=False, encoding="utf-8-sig")
+        print("上方修正詳細CSV: data/backtest_revision_records.csv")
     summary_rows = []
     for keys, grp in df_all.groupby(["strategy", "max_hold", "stop_pct", "target_pct", "skip_bear"]):
         summary_rows.append({
