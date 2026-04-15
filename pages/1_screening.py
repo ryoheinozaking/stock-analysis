@@ -219,6 +219,7 @@ _sidebar_section("追加フィルター", color="#334155")
 volume_surge  = st.sidebar.checkbox("出来高急増（平均の2倍以上）", value=False)
 high_roe      = st.sidebar.checkbox("高ROE優先（ROE 15%以上）", value=False)
 near_52w_high = st.sidebar.checkbox("52週高値圏（直近高値の90%以上）", value=False)
+use_revision  = st.sidebar.checkbox("📈 上方修正あり（直近30日・FY+20%以上）", value=False)
 
 # ── モメンタムフィルター ──
 _sidebar_section("モメンタム")
@@ -226,11 +227,10 @@ use_mom = st.sidebar.checkbox("🎯 モメンタムシグナルあり", value=Fa
 if use_mom:
     mom_days_max = st.sidebar.slider("シグナル直近N日以内", 7, 60, 30)
     mom_vol_min  = st.sidebar.slider("出来高倍率下限", 2.0, 5.0, 3.0, 0.5)
-    mom_combo    = st.sidebar.checkbox("上方修正×モメンタムのみ", value=False)
 else:
     mom_days_max = 30
     mom_vol_min  = 2.0
-    mom_combo    = False
+mom_combo = False  # 後方互換のため保持
 pullback_pct = st.sidebar.slider("押し目目標 (%)", 1.0, 5.0, 2.0, 0.5)
 
 # =========================================================
@@ -322,6 +322,10 @@ if cache_df is not None and not cache_df.empty:
             keep.append(current >= high_52w * 0.9)
         df = df[keep]
 
+    # 上方修正フィルター（独立）
+    if use_revision and "mom_revision" in df.columns:
+        df = df[df["mom_revision"].notna()]
+
     # モメンタムフィルター
     if use_mom and "mom_signal" in df.columns:
         df = df[df["mom_signal"] == True]
@@ -332,8 +336,6 @@ if cache_df is not None and not cache_df.empty:
             df = df.drop(columns=["_sig_dt"])
         if mom_vol_min > 2.0 and "mom_vol_ratio" in df.columns:
             df = df[df["mom_vol_ratio"] >= mom_vol_min]
-        if mom_combo and "mom_revision" in df.columns:
-            df = df[df["mom_revision"].notna()]
 
     result_df = df.sort_values("score", ascending=False).head(display_top_n_funda).reset_index(drop=True)
 
