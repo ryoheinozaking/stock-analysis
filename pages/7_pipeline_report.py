@@ -41,7 +41,7 @@ _NUMERIC_COLS = [
     "close", "funda_score", "tech_score", "total_score",
     "rev_growth", "profit_growth", "ROE", "PER", "PBR", "market_cap",
     "stop_loss", "stop_pct", "target", "entry_breakout", "entry_pullback",
-    "sepa_stage",
+    "sepa_stage", "mom_revision",
 ]
 
 
@@ -114,11 +114,13 @@ def _render_scorecard(rank: int, row, ai_stocks: dict, key_prefix: str = "t1") -
     ai_data   = ai_stocks.get(getattr(row, "code_4", ""), {})
     judgment  = ai_data.get("judgment", "")
     jcolor    = _judgment_color(judgment)
-    signal    = getattr(row, "signal", "")
-    sig_color  = _SIG_COLOR.get(signal, "#888")
-    sig_label  = _SIG_LABEL.get(signal, signal)
-    sepa_stage = getattr(row, "sepa_stage", 0)
-    is_sepa2   = sepa_stage == 2
+    signal       = getattr(row, "signal", "")
+    sig_color    = _SIG_COLOR.get(signal, "#888")
+    sig_label    = _SIG_LABEL.get(signal, signal)
+    sepa_stage   = getattr(row, "sepa_stage", 0)
+    is_sepa2     = sepa_stage == 2
+    mom_revision = getattr(row, "mom_revision", None)
+    has_revision = mom_revision is not None and not (isinstance(mom_revision, float) and np.isnan(mom_revision))
 
     with st.container(border=True):
         hc1, hc2, hc3 = st.columns([0.5, 3.5, 1.2])
@@ -141,7 +143,12 @@ def _render_scorecard(rank: int, row, ai_stocks: dict, key_prefix: str = "t1") -
         if judgment:
             badge_html += (
                 f'<span style="background:{jcolor};color:#fff;padding:4px 10px;'
-                f'border-radius:12px;font-size:0.75rem">{judgment}</span>'
+                f'border-radius:12px;font-size:0.75rem;margin-right:6px">{judgment}</span>'
+            )
+        if has_revision:
+            badge_html += (
+                f'<span style="background:#7c3aed;color:#fff;padding:4px 10px;'
+                f'border-radius:12px;font-size:0.75rem">上方修正+{mom_revision:.0f}%</span>'
             )
         badge_html += '</p>'
         hc3.markdown(badge_html, unsafe_allow_html=True)

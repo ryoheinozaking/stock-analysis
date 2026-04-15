@@ -232,11 +232,14 @@ def _empty_mom():
     }
 
 
-def _get_revision(fins_df, code, threshold_pct=20, window_days=60):
+def _get_revision(fins_df, code, threshold_pct=20, window_days=30):
     try:
         cf = fins_df[fins_df["Code"] == code].copy()
         if cf.empty:
             return np.nan
+        # 通期（FY）のみ対象（四半期間比較による誤検知を防ぐ）
+        if "CurPerType" in cf.columns:
+            cf = cf[cf["CurPerType"] == "FY"]
         cf["DiscDate"] = pd.to_datetime(cf["DiscDate"], errors="coerce")
         cf["FEPS"]     = pd.to_numeric(cf["FEPS"], errors="coerce")
         cf = (cf.dropna(subset=["FEPS", "DiscDate"])
