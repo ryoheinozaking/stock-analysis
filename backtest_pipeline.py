@@ -97,6 +97,45 @@ def _simulate_trade(closes: np.ndarray, entry_idx: int, stop_pct: float, max_hol
     return {"exit_idx": exit_idx, "exit_reason": exit_reason, "return_pct": ret}
 
 
+def _build_revision_events(fins_df: pd.DataFrame, threshold_pct: float = 20.0) -> dict:
+    """
+    fins_cache から上方修正イベントを抽出する。
+    同一銘柄の連続するFEPS開示を比較し、(new-prev)/|prev|*100 >= threshold_pct の
+    開示日を「上方修正日」として記録する。
+    戻り値: {code_5digit_str: [pd.Timestamp, ...]}
+    """
+    events: dict = {}
+    work = fins_df.copy()
+    work["DiscDate"] = pd.to_datetime(work["DiscDate"], errors="coerce")
+    work["FEPS"]     = pd.to_numeric(work["FEPS"],     errors="coerce")
+    valid = work.dropna(subset=["DiscDate", "FEPS"]).query("FEPS > 0")
+
+    for code, grp in valid.groupby("Code"):
+        grp = grp.sort_values("DiscDate").reset_index(drop=True)
+        dates = []
+        for i in range(1, len(grp)):
+            prev_eps = float(grp.loc[i - 1, "FEPS"])
+            curr_eps = float(grp.loc[i,     "FEPS"])
+            if prev_eps > 0:
+                rev = (curr_eps - prev_eps) / abs(prev_eps) * 100
+                if rev >= threshold_pct:
+                    dates.append(grp.loc[i, "DiscDate"])
+        if dates:
+            events[str(code).zfill(5)] = dates
+
+    return events
+
+
+def _has_revision(revision_events: dict, code: str, date: str, window_days: int) -> bool:
+    """date から window_days 日以内（含む）に上方修正イベントがあれば True を返す。"""
+    event_dates = revision_events.get(code, [])
+    if not event_dates:
+        return False
+    ts     = pd.Timestamp(date)
+    cutoff = ts - pd.Timedelta(days=window_days)
+    return any(cutoff <= e <= ts for e in event_dates)
+
+
 def _calc_market_condition(prices_df: pd.DataFrame, date: str) -> str:
     """指定日時点の地合いを返す: 強気 / 中立 / 弱気 / 不明"""
     results = {}
