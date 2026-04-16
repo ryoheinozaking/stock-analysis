@@ -29,6 +29,10 @@ data/edinetdb_cache/
 # バックアップ・アーカイブ
 backup/
 archive/
+*.bak
+
+# ローカル起動スクリプト
+start_app.bat
 
 # Claude Code / Superpowers
 .claude/
