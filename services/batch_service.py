@@ -234,7 +234,8 @@ def _empty_mom():
 
 def _get_revision(fins_df, code, threshold_pct=20, window_days=30):
     try:
-        cf = fins_df[fins_df["Code"] == code].copy()
+        # fins_df はコード別グループ化済みを前提（フィルター不要）
+        cf = fins_df.copy()
         if cf.empty:
             return np.nan
         # 通期（FY）のみ対象（四半期間比較による誤検知を防ぐ）
@@ -442,9 +443,10 @@ def _calc_momentum_signals(cp, fins_df, code, topix_close=None, lookback=20, vol
 # ─── メトリクス計算（APIコールなし・ローカル処理） ───────────────
 
 def _compute_metrics(code, prices_df, fins_df, info_row):
-    """1銘柄分のスコア・指標を計算して辞書で返す。データ不足は None。"""
+    """1銘柄分のスコア・指標を計算して辞書で返す。データ不足は None。
+    prices_df・fins_df はこのコード専用に事前フィルター済みの想定。"""
     try:
-        cp = prices_df[prices_df["Code"] == code].copy()
+        cp = prices_df  # build_stock_cache でコード別グループ化済み
         if len(cp) < 20:
             return None
 
@@ -461,8 +463,8 @@ def _compute_metrics(code, prices_df, fins_df, info_row):
         rsi     = calc_rsi(close)
         ma25    = calc_moving_average(close, 25)
 
-        # 財務データ（全種別・直近5件）
-        cf = fins_df[fins_df["Code"] == code]
+        # 財務データ（build_stock_cache でコード別グループ化済み）
+        cf = fins_df
         if cf.empty:
             return None
         cf = cf.sort_values("DiscDate", ascending=False).reset_index(drop=True)
@@ -662,9 +664,25 @@ def build_stock_cache(market_codes=None):
         if code in info_map:
             info_map[code]["_topix_close"] = topix_close
 
+    # コード別グループを事前構築（ループ内の全行フィルターを排除）
+    # 直近300行に限定: MA200=200日・52W高安値=252日をカバーしつつデータ量を削減
+    prices_grouped = {
+        code: grp.sort_values("Date").tail(300).reset_index(drop=True)
+        for code, grp in prices_df.groupby("Code")
+    }
+    fins_grouped = {
+        code: grp.reset_index(drop=True)
+        for code, grp in fins_df.groupby("Code")
+    }
+
     results = []
     for code in codes:
-        row = _compute_metrics(code, prices_df, fins_df, info_map.get(code))
+        row = _compute_metrics(
+            code,
+            prices_grouped.get(code, pd.DataFrame()),
+            fins_grouped.get(code, pd.DataFrame()),
+            info_map.get(code),
+        )
         if row:
             results.append(row)
 
