@@ -30,7 +30,7 @@ MODEL                 = "claude-sonnet-4-6"
 INPUT_COST_PER_TOKEN  = 3.00  / 1_000_000   # $3.00/MTok
 OUTPUT_COST_PER_TOKEN = 15.00 / 1_000_000   # $15.00/MTok
 
-# ── ハードフィルタ閾値 ────────────────────────────────────────────────────
+# ── ハードフィルタ閾値（成長株モード） ───────────────────────────────────
 HARD = {
     "rev_growth_min":    10.0,    # 売上成長率 > 10%
     "profit_growth_min": 10.0,    # 利益成長率（純利益）> 10%
@@ -39,7 +39,16 @@ HARD = {
     "market_cap_min":    100e8,   # 時価総額 > 100億円
 }
 
-# ── ファンダ各指標の最大点数 ──────────────────────────────────────────────
+# ── ハードフィルタ閾値（バリュー株モード） ──────────────────────────────
+HARD_VALUE = {
+    "pbr_max":           1.5,     # PBR ≤ 1.5
+    "per_max":           20.0,    # PER ≤ 20（かつ正値）
+    "roe_min":            8.0,    # ROE ≥ 8%
+    "equity_ratio_min":  40.0,    # 自己資本比率 ≥ 40%
+    "market_cap_min":   100e8,    # 時価総額 > 100億円
+}
+
+# ── ファンダ各指標の最大点数（成長株モード） ─────────────────────────────
 FUNDA_MAX = {
     # Growth 50pt
     "rev_growth":    20,
@@ -55,6 +64,23 @@ FUNDA_MAX = {
     "pbr":            5,
 }
 VALUE_METRICS = {"per", "psr", "pbr"}   # 低いほど良い指標
+
+# ── ファンダ各指標の最大点数（バリュー株モード） ─────────────────────────
+FUNDA_MAX_VALUE = {
+    # Value 50pt（割安指標を重視）
+    "pbr":           20,
+    "per":           20,
+    "psr":           10,
+    # Quality 25pt
+    "roe":           10,
+    "op_margin":     10,
+    "equity_ratio":   5,
+    # Growth 25pt（成長は補助的）
+    "rev_growth":    10,
+    "profit_growth": 10,
+    "eps_growth":     5,
+}
+VALUE_METRICS_VALUE = {"per", "psr", "pbr"}   # 低いほど良い指標（バリューモード）
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -146,21 +172,33 @@ def _build_fins_metrics(fins_fy: pd.DataFrame, prices_df: pd.DataFrame) -> pd.Da
 def apply_hard_filter(
     stock_df: pd.DataFrame,
     fins_metrics: pd.DataFrame,
+    mode: str = "growth",
 ) -> pd.DataFrame:
-    """ハードフィルタ通過銘柄を返す。"""
+    """ハードフィルタ通過銘柄を返す。mode='growth' or 'value'"""
     df = stock_df.merge(fins_metrics, on="code", how="left")
 
     # 時価総額計算
     df["market_cap"] = df["close"] * df["sh_out"].fillna(0)
 
-    mask = (
-        (df["rev_growth"]    > HARD["rev_growth_min"])    &
-        (df["profit_growth"] > HARD["profit_growth_min"]) &
-        (df["ROE"]           > HARD["roe_min"])           &
-        (df["equity_ratio"]  > HARD["equity_ratio_min"])  &
-        (df["market_cap"]    > HARD["market_cap_min"])    &
-        (df["op_positive"].fillna(False) == True)          # 営業黒字（Altman Z補完）
-    )
+    if mode == "value":
+        mask = (
+            (df["PBR"].fillna(999)         <= HARD_VALUE["pbr_max"])          &
+            (df["PER"].fillna(999)         <= HARD_VALUE["per_max"])          &
+            (df["PER"].fillna(0)           >  0)                              &
+            (df["ROE"].fillna(0)           >= HARD_VALUE["roe_min"])          &
+            (df["equity_ratio"].fillna(0)  >= HARD_VALUE["equity_ratio_min"]) &
+            (df["market_cap"]              >= HARD_VALUE["market_cap_min"])   &
+            (df["op_positive"].fillna(False) == True)
+        )
+    else:
+        mask = (
+            (df["rev_growth"]    > HARD["rev_growth_min"])    &
+            (df["profit_growth"] > HARD["profit_growth_min"]) &
+            (df["ROE"]           > HARD["roe_min"])           &
+            (df["equity_ratio"]  > HARD["equity_ratio_min"])  &
+            (df["market_cap"]    > HARD["market_cap_min"])    &
+            (df["op_positive"].fillna(False) == True)          # 営業黒字（Altman Z補完）
+        )
     return df[mask].copy()
 
 
@@ -176,12 +214,16 @@ def _percentile(series: pd.Series, invert: bool = False) -> pd.Series:
     return ranked.fillna(50.0)
 
 
-def calc_funda_score(df: pd.DataFrame) -> pd.DataFrame:
+def calc_funda_score(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
     """
     ファンダスコアを計算して df に列追加して返す。
+    mode='growth': Growth50 + Quality25 + Value25
+    mode='value' : Value50 + Quality25 + Growth25
     PSR = market_cap / sales_fy
     """
     df = df.copy()
+    funda_max   = FUNDA_MAX_VALUE   if mode == "value" else FUNDA_MAX
+    val_metrics = VALUE_METRICS_VALUE if mode == "value" else VALUE_METRICS
 
     # PSR
     df["psr"] = np.where(
@@ -191,8 +233,8 @@ def calc_funda_score(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     score = pd.Series(0.0, index=df.index)
-    for metric, max_pt in FUNDA_MAX.items():
-        invert = (metric in VALUE_METRICS)
+    for metric, max_pt in funda_max.items():
+        invert = (metric in val_metrics)
         col_map = {
             "rev_growth":    "rev_growth",
             "profit_growth": "profit_growth",
@@ -248,8 +290,8 @@ def _calc_macd(close: pd.Series):
     )
 
 
-def _tech_score_single(cp: pd.DataFrame) -> dict:
-    """1銘柄分のテクニカルスコアを計算。"""
+def _tech_score_single(cp: pd.DataFrame, mode: str = "growth") -> dict:
+    """1銘柄分のテクニカルスコアを計算。mode='growth' or 'value'"""
     cp = cp.sort_values("Date").reset_index(drop=True)
 
     # 株式分割対応: AdjFactorで過去価格を現在スケールに正規化
@@ -304,12 +346,22 @@ def _tech_score_single(cp: pd.DataFrame) -> dict:
     # ── RSI スコア（20点）
     rsi_score = 0
     if pd.notna(rsi):
-        if 50 <= rsi <= 65:
-            rsi_score = 20
-        elif 40 <= rsi < 50:
-            rsi_score = 10
-        elif 65 < rsi <= 75:
-            rsi_score = 5
+        if mode == "value":
+            # バリュー株: 底値圏からの反転（RSI 30-55 が最適エントリーゾーン）
+            if 30 <= rsi <= 55:
+                rsi_score = 20
+            elif 55 < rsi <= 65:
+                rsi_score = 10
+            elif 25 <= rsi < 30:
+                rsi_score = 5
+        else:
+            # 成長株: トレンド継続（RSI 50-65 が最適）
+            if 50 <= rsi <= 65:
+                rsi_score = 20
+            elif 40 <= rsi < 50:
+                rsi_score = 10
+            elif 65 < rsi <= 75:
+                rsi_score = 5
     score += rsi_score
 
     # ── MACD スコア（20点）
@@ -360,13 +412,14 @@ def _tech_score_single(cp: pd.DataFrame) -> dict:
 def calc_tech_scores(
     filtered_df: pd.DataFrame,
     prices_df: pd.DataFrame,
+    mode: str = "growth",
 ) -> pd.DataFrame:
     """filtered_df の各銘柄のテクニカルスコアを計算して列追加。"""
     results = []
     for _, row in filtered_df.iterrows():
         code = row["code"]   # 5桁コード
         cp   = prices_df[prices_df["Code"] == code]
-        res  = _tech_score_single(cp) if len(cp) >= 26 else {"tech_score": np.nan, "tech_detail": {}}
+        res  = _tech_score_single(cp, mode=mode) if len(cp) >= 26 else {"tech_score": np.nan, "tech_detail": {}}
         res["code"] = code
         results.append(res)
 
@@ -391,17 +444,21 @@ def calc_total_score(df: pd.DataFrame) -> pd.DataFrame:
 #  売買シグナル
 # ════════════════════════════════════════════════════════════════════════
 
-# シグナル判定ルール
-_BUY_TOTAL_MIN  = 60
-_BUY_TECH_MIN   = 60
-_BUY_RSI_MIN    = 50
-_BUY_RSI_MAX    = 65
+# シグナル判定ルール（成長株モード）
+_BUY_TOTAL_MIN   = 60
+_BUY_TECH_MIN    = 60
+_BUY_RSI_MIN     = 50
+_BUY_RSI_MAX     = 65
 _WATCH_TOTAL_MIN = 50
-_STOP_LOSS_PCT  = 0.15   # -15%
-_TARGET_PCT     = 0.25   # +25%
+_STOP_LOSS_PCT   = 0.15   # -15%
+_TARGET_PCT      = 0.25   # +25%
+
+# シグナル判定ルール（バリュー株モード）
+_BUY_RSI_MIN_VALUE = 30   # 底値圏からの反転エントリー
+_BUY_RSI_MAX_VALUE = 55
 
 
-def calc_trade_signals(df: pd.DataFrame) -> pd.DataFrame:
+def calc_trade_signals(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
     """
     各銘柄に売買シグナルとエントリー・損切り・利確価格を付与する。
 
@@ -419,6 +476,10 @@ def calc_trade_signals(df: pd.DataFrame) -> pd.DataFrame:
     signals, reasons = [], []
     entries_b, entries_p, stops, stop_pcts, targets = [], [], [], [], []
 
+    # モード別 RSI 範囲
+    rsi_min = _BUY_RSI_MIN_VALUE if mode == "value" else _BUY_RSI_MIN
+    rsi_max = _BUY_RSI_MAX_VALUE if mode == "value" else _BUY_RSI_MAX
+
     for _, row in df.iterrows():
         close      = float(row["close"])
         total      = float(row.get("total_score", 0) or 0)
@@ -429,7 +490,7 @@ def calc_trade_signals(df: pd.DataFrame) -> pd.DataFrame:
 
         # ── シグナル判定 ──────────────────────────────
         above_ma25 = (ma25 is not None) and (close > ma25)
-        rsi_ok     = (rsi  is not None) and (_BUY_RSI_MIN <= rsi <= _BUY_RSI_MAX)
+        rsi_ok     = (rsi  is not None) and (rsi_min <= rsi <= rsi_max)
 
         if (total >= _BUY_TOTAL_MIN and tech >= _BUY_TECH_MIN
                 and above_ma25 and rsi_ok):
@@ -444,7 +505,7 @@ def calc_trade_signals(df: pd.DataFrame) -> pd.DataFrame:
             if total < _BUY_TOTAL_MIN:    parts.append(f"総合{total:.0f}<60")
             if tech  < _BUY_TECH_MIN:     parts.append(f"テクニカル{tech:.0f}<60")
             if not above_ma25:            parts.append("MA25下")
-            if not rsi_ok:                parts.append(f"RSI={rsi:.0f}" if rsi else "RSI範囲外")
+            if not rsi_ok:                parts.append(f"RSI={rsi:.0f}(対象:{rsi_min}-{rsi_max})" if rsi else "RSI範囲外")
             reason = " / ".join(parts) if parts else "スコア基準は満たすが条件不足"
         else:
             sig    = "AVOID"
@@ -593,10 +654,37 @@ _SYSTEM_PROMPT = """あなたは日本株の成長株専門アナリストです
   "top3_reason": "ベスト3の選定理由（3〜4文）"
 }"""
 
+_SYSTEM_PROMPT_VALUE = """あなたは日本株のバリュー投資専門アナリストです。
+グレアム・バフェット流の割安株投資の観点から、各銘柄の投資分析を行ってください。
 
-def _build_prompt(top10: pd.DataFrame) -> str:
+バリュートラップ（安いが上がらない銘柄）と本物の割安株を見分けることが重要です。
+
+## 出力形式（JSON）
+以下のJSONフォーマットで返してください。
+**重要: 各フィールドの値は必ず1行で記述してください。改行を含めないでください。**
+
+{
+  "market_comment": "現在の市場環境コメント（2〜3文、バリュー投資視点）",
+  "stocks": [
+    {
+      "code": "銘柄コード",
+      "story": "割安の理由と株価回復シナリオ（なぜ市場に見落とされているか・2〜3文）",
+      "strength": "割安の根拠・財務的強み（1〜2文）",
+      "risk": "バリュートラップの可能性・主要リスク（1〜2文）",
+      "catalyst": "株価を動かすカタリスト（PBR改善施策・増配・自社株買い・業績回復）",
+      "judgment": "買い候補 | 監視 | 見送り",
+      "upside": "想定上昇余地（例: +30〜50%）"
+    }
+  ],
+  "top3": ["銘柄コード1", "銘柄コード2", "銘柄コード3"],
+  "top3_reason": "ベスト3の選定理由（3〜4文、割安の質とカタリストを重視）"
+}"""
+
+
+def _build_prompt(top10: pd.DataFrame, mode: str = "growth") -> str:
+    mode_label = "バリュー株" if mode == "value" else "成長株"
     lines = [
-        f"# 成長株スクリーニング結果 Top10（{datetime.now().strftime('%Y-%m-%d')}）",
+        f"# {mode_label}スクリーニング結果 Top10（{datetime.now().strftime('%Y-%m-%d')}）",
         "",
         "以下の銘柄を分析してください。",
         "",
@@ -675,19 +763,20 @@ def _extract_json(text: str) -> dict:
     return result
 
 
-def analyze_with_claude(top10: pd.DataFrame) -> dict:
+def analyze_with_claude(top10: pd.DataFrame, mode: str = "growth") -> dict:
     """上位10銘柄をClaude APIに分析させる。"""
     key = os.getenv("ANTHROPIC_API_KEY")
     if not key:
         raise EnvironmentError(".env に ANTHROPIC_API_KEY が設定されていません")
 
     client = anthropic.Anthropic(api_key=key)
-    prompt = _build_prompt(top10)
+    prompt        = _build_prompt(top10, mode=mode)
+    system_prompt = _SYSTEM_PROMPT_VALUE if mode == "value" else _SYSTEM_PROMPT
 
     resp = client.messages.create(
         model=MODEL,
         max_tokens=8192,
-        system=_SYSTEM_PROMPT,
+        system=system_prompt,
         messages=[{"role": "user", "content": prompt}],
     )
     text = resp.content[0].text.strip()
@@ -706,7 +795,7 @@ def analyze_with_claude(top10: pd.DataFrame) -> dict:
 #  パイプライン実行（メインエントリ）
 # ════════════════════════════════════════════════════════════════════════
 
-def run_pipeline(use_claude: bool = True, progress_callback=None) -> dict:
+def run_pipeline(use_claude: bool = True, progress_callback=None, mode: str = "growth") -> dict:
     """
     パイプライン全体を実行して結果辞書を返す。
 
@@ -736,26 +825,27 @@ def run_pipeline(use_claude: bool = True, progress_callback=None) -> dict:
     fins_metrics = _build_fins_metrics(fins_fy, prices_df)
 
     _cb("① ハードフィルタ適用中...")
-    filtered = apply_hard_filter(stock_df, fins_metrics)
+    filtered = apply_hard_filter(stock_df, fins_metrics, mode=mode)
 
     if filtered.empty:
         return {
             "filtered": filtered, "scored": filtered,
             "top10": filtered, "ai_analysis": None,
+            "mode": mode,
             "stats": {"total": len(stock_df), "filtered": 0, "top10": 0},
         }
 
     _cb("② ファンダスコア計算中...")
-    scored = calc_funda_score(filtered)
+    scored = calc_funda_score(filtered, mode=mode)
 
     _cb("③ テクニカルスコア計算中...")
-    scored = calc_tech_scores(scored, prices_df)
+    scored = calc_tech_scores(scored, prices_df, mode=mode)
 
     _cb("最終スコア合算中...")
     scored = calc_total_score(scored)
 
     _cb("売買シグナル計算中...")
-    scored = calc_trade_signals(scored)
+    scored = calc_trade_signals(scored, mode=mode)
 
     _cb("地合いフィルター計算中...")
     market = calc_market_condition(prices_df)
@@ -766,7 +856,7 @@ def run_pipeline(use_claude: bool = True, progress_callback=None) -> dict:
     if use_claude:
         _cb("Claude API で投資分析中...")
         try:
-            ai_result = analyze_with_claude(top10)
+            ai_result = analyze_with_claude(top10, mode=mode)
         except Exception as e:
             ai_result = {"error": str(e)}
 
@@ -777,6 +867,7 @@ def run_pipeline(use_claude: bool = True, progress_callback=None) -> dict:
         "top10":            top10,
         "ai_analysis":      ai_result,
         "market_condition": market,
+        "mode":             mode,
         "stats": {
             "total":    len(stock_df),
             "filtered": len(filtered),

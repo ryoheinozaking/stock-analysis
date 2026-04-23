@@ -46,10 +46,11 @@ _NUMERIC_COLS = [
 
 
 def _save_cache(result: dict) -> None:
-    """top10・scored・ai_analysis・market_condition・stats をJSONに保存する。"""
+    """top10・scored・ai_analysis・market_condition・stats・mode をJSONに保存する。"""
     scored = result.get("scored", pd.DataFrame())
     payload = {
         "generated_at":     datetime.now().isoformat(),
+        "mode":             result.get("mode", "growth"),
         "stats":            result["stats"],
         "top10":            result["top10"].to_dict(orient="records"),
         "scored":           scored.to_dict(orient="records") if not scored.empty else [],
@@ -78,6 +79,7 @@ def _load_cache() -> dict:
             payload = json.load(f)
         return {
             "generated_at":     payload.get("generated_at", ""),
+            "mode":             payload.get("mode", "growth"),
             "stats":            payload["stats"],
             "top10":            _restore_df(payload["top10"]),
             "scored":           _restore_df(payload.get("scored", [])),
@@ -109,7 +111,7 @@ _SIG_COLOR = {"BUY": "#26a69a", "WATCH": "#ff9800", "AVOID": "#ef5350"}
 _SIG_LABEL = {"BUY": "BUY", "WATCH": "WATCH", "AVOID": "AVOID"}
 
 
-def _render_scorecard(rank: int, row, ai_stocks: dict, key_prefix: str = "t1") -> None:
+def _render_scorecard(rank: int, row, ai_stocks: dict, key_prefix: str = "t1", mode: str = "growth") -> None:
     """1銘柄分のスコアカードを描画する。key_prefix でタブ間のID重複を防ぐ。"""
     ai_data   = ai_stocks.get(getattr(row, "code_4", ""), {})
     judgment  = ai_data.get("judgment", "")
@@ -202,8 +204,9 @@ def _render_scorecard(rank: int, row, ai_stocks: dict, key_prefix: str = "t1") -
             )
 
         if ai_data:
+            story_label = "割安シナリオ" if mode == "value" else "成長ストーリー"
             if ai_data.get("story"):
-                st.markdown(f"**成長ストーリー**: {ai_data['story']}")
+                st.markdown(f"**{story_label}**: {ai_data['story']}")
             ai_c1, ai_c2, ai_c3 = st.columns(3)
             if ai_data.get("upside"):
                 ai_c1.success(f"上昇余地: {ai_data['upside']}")
@@ -314,8 +317,9 @@ def _chart_radar(row: pd.Series, detail: dict):
 #  HTMLレポート生成
 # ════════════════════════════════════════════════════════════════════════
 
-def _generate_html(top10: pd.DataFrame, ai: dict, stats: dict) -> str:
-    date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+def _generate_html(top10: pd.DataFrame, ai: dict, stats: dict, mode: str = "growth") -> str:
+    date_str   = datetime.now().strftime("%Y-%m-%d %H:%M")
+    mode_label = "バリュー株" if mode == "value" else "成長株"
 
     # スコアカード HTML
     cards_html = ""
@@ -395,7 +399,7 @@ def _generate_html(top10: pd.DataFrame, ai: dict, stats: dict) -> str:
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>成長株パイプラインレポート {date_str}</title>
+  <title>{mode_label}パイプラインレポート {date_str}</title>
   <style>
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
     body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -445,7 +449,7 @@ def _generate_html(top10: pd.DataFrame, ai: dict, stats: dict) -> str:
   </style>
 </head>
 <body>
-  <h1>成長株パイプラインレポート</h1>
+  <h1>{mode_label}パイプラインレポート</h1>
   <div class="meta">生成日時: {date_str}　｜
     全銘柄: {stats['total']:,} → フィルタ通過: {stats['filtered']} → 最終: {stats['top10']}</div>
 
@@ -491,12 +495,19 @@ def _save_html(html: str) -> str:
 #  Streamlit UI
 # ════════════════════════════════════════════════════════════════════════
 
-st.title("🔬 成長株パイプラインレポート")
+st.title("🔬 パイプラインレポート")
 st.caption("ハードフィルタ → ファンダスコア → テクニカルスコア → Claude AI分析")
 
 # ── サイドバー ─────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 設定")
+    mode = st.radio(
+        "モード",
+        options=["growth", "value"],
+        format_func=lambda x: "📈 成長株モード" if x == "growth" else "💎 バリュー株モード",
+        horizontal=True,
+        key="pipeline_mode",
+    )
     use_claude = st.toggle("Claude AI分析を実行する", value=True)
     if use_claude:
         st.caption("上位10銘柄を Sonnet 4.6 で分析します（1回あたり数十円）")
@@ -504,8 +515,23 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("**設計仕様**")
-    st.markdown("""
-- **ハードフィルタ**
+    if mode == "value":
+        st.markdown("""
+- **ハードフィルタ（バリュー）**
+  - PBR ≤ 1.5
+  - PER ≤ 20（かつ正値）
+  - ROE ≥ 8%
+  - 自己資本比率 ≥ 40%
+  - 時価総額 > 100億
+- **ファンダ** (60%)
+  - Value 50% / Quality 25% / Growth 25%
+- **テクニカル** (40%)
+  - MA 30pt / RSI 20pt（30-55）/ MACD 20pt
+  - 出来高 15pt / 高値ブレイク 15pt
+""")
+    else:
+        st.markdown("""
+- **ハードフィルタ（成長株）**
   - 売上成長率 > 10%
   - 利益成長率 > 10%
   - ROE > 15%
@@ -514,7 +540,7 @@ with st.sidebar:
 - **ファンダ** (60%)
   - Growth 50% / Quality 25% / Value 25%
 - **テクニカル** (40%)
-  - MA 30pt / RSI 20pt / MACD 20pt
+  - MA 30pt / RSI 20pt（50-65）/ MACD 20pt
   - 出来高 15pt / 高値ブレイク 15pt
 """)
 
@@ -529,7 +555,7 @@ if run_btn:
             log.write(f"⏳ {msg}")
 
         try:
-            result = run_pipeline(use_claude=use_claude, progress_callback=_cb)
+            result = run_pipeline(use_claude=use_claude, progress_callback=_cb, mode=mode)
             result["generated_at"] = datetime.now().isoformat()
             # Claude分析OFFの場合、既存のAI分析結果を引き継ぐ
             if not use_claude:
@@ -550,12 +576,18 @@ if result is None:
     st.info("サイドバーの「🚀 パイプライン実行」ボタンを押してください。")
     st.stop()
 
-top10  = result["top10"]
-scored = result.get("scored", pd.DataFrame())
-ai     = result["ai_analysis"]
-stats  = result["stats"]
-market = result.get("market_condition") or {}
+top10       = result["top10"]
+scored      = result.get("scored", pd.DataFrame())
+ai          = result["ai_analysis"]
+stats       = result["stats"]
+market      = result.get("market_condition") or {}
+cached_mode = result.get("mode", "growth")
 generated_at = result.get("generated_at", "")
+
+# キャッシュのモードとサイドバー選択が異なる場合に通知
+if cached_mode != mode:
+    mode_name = "バリュー株" if cached_mode == "value" else "成長株"
+    st.info(f"表示中のデータは **{mode_name}モード** で実行した結果です。「🚀 パイプライン実行」で現在のモードに更新できます。")
 if generated_at:
     try:
         dt = datetime.fromisoformat(generated_at)
@@ -627,7 +659,7 @@ tab1, tab2 = st.tabs(["スコア TOP10", "SEPA2絞り込み TOP10"])
 with tab1:
     st.subheader("スコアランキング TOP10")
     for rank, row in enumerate(top10.itertuples(), 1):
-        _render_scorecard(rank, row, ai_stocks)
+        _render_scorecard(rank, row, ai_stocks, mode=cached_mode)
 
 with tab2:
     if not scored.empty and "sepa_stage" in scored.columns:
@@ -647,7 +679,7 @@ with tab2:
         st.subheader(f"SEPA2絞り込み TOP10（全{sepa2_count}件中）")
         st.caption("フィルタ通過銘柄のうち SEPA Stage2 を満たす銘柄をスコア順に表示。")
         for rank, row in enumerate(sepa2_df.itertuples(), 1):
-            _render_scorecard(rank, row, ai_stocks, key_prefix="t2")
+            _render_scorecard(rank, row, ai_stocks, key_prefix="t2", mode=cached_mode)
 
 st.divider()
 
@@ -672,13 +704,24 @@ st.divider()
 st.subheader("📋 claude.ai 用テキスト")
 st.caption("このテキストをコピーして claude.ai のプロジェクトに貼り付けてください。")
 
-def _build_claude_text(top10: pd.DataFrame, ai: dict, market: dict) -> str:
+def _build_claude_text(top10: pd.DataFrame, ai: dict, market: dict, mode: str = "growth") -> str:
+    mode_label  = "バリュー株" if mode == "value" else "成長株"
+    score_design = (
+        "ファンダ60%（Value50+Quality25+Growth25）＋テクニカル40%（MA/RSI30-55/MACD/出来高/高値ブレイク）"
+        if mode == "value" else
+        "ファンダ60%（Growth50+Quality25+Value25）＋テクニカル40%（MA/RSI50-65/MACD/出来高/高値ブレイク）"
+    )
+    analyst_instruction = (
+        "バリュー投資の専門家として、割安の根拠・バリュートラップリスク・回復カタリストを分析してください。"
+        if mode == "value" else
+        "プロのファンドマネージャーとして投資分析をしてください。"
+    )
     lines = [
-        "以下はクオンツ＋テクニカルスクリーニングで抽出されたTOP10銘柄です。",
-        "プロのファンドマネージャーとして投資分析をしてください。",
+        f"以下はクオンツ＋テクニカルスクリーニングで抽出された{mode_label}TOP10銘柄です。",
+        analyst_instruction,
         "",
         f"【スクリーニング日時】{datetime.now().strftime('%Y-%m-%d')}",
-        "【スコア設計】ファンダ60%（Growth50+Quality25+Value25）＋テクニカル40%（MA/RSI/MACD/出来高/高値ブレイク）",
+        f"【スコア設計】{score_design}",
     ]
 
     # 地合い情報
@@ -777,16 +820,25 @@ def _build_claude_text(top10: pd.DataFrame, ai: dict, market: dict) -> str:
                     f"ストーリー:{s.get('story','')}"
                 )
 
-    lines += [
-        "",
-        "上記データをもとに：",
-        "① 各銘柄の投資ストーリー・強み・リスク・カタリストを分析してください",
-        "② 最も有望な銘柄ベスト3を選んでその理由を教えてください",
-        "③ 今の市場環境（2026年4月）を踏まえた投資戦略コメントをお願いします",
-    ]
+    if mode == "value":
+        lines += [
+            "",
+            "上記データをもとに：",
+            "① 各銘柄の割安の根拠・財務的強み・バリュートラップリスク・回復カタリストを分析してください",
+            "② 最も有望なバリュー株ベスト3を選んでその理由を教えてください（PBR改善余地・株主還元・業績回復を重視）",
+            "③ 今の市場環境（2026年4月）を踏まえたバリュー投資戦略コメントをお願いします",
+        ]
+    else:
+        lines += [
+            "",
+            "上記データをもとに：",
+            "① 各銘柄の投資ストーリー・強み・リスク・カタリストを分析してください",
+            "② 最も有望な銘柄ベスト3を選んでその理由を教えてください",
+            "③ 今の市場環境（2026年4月）を踏まえた投資戦略コメントをお願いします",
+        ]
     return "\n".join(lines)
 
-claude_text = _build_claude_text(top10, ai, market)
+claude_text = _build_claude_text(top10, ai, market, mode=cached_mode)
 st.text_area(
     label="テキストをコピーしてclaude.aiに貼り付け",
     value=claude_text,
@@ -804,7 +856,7 @@ col_save, col_dl = st.columns(2)
 with col_save:
     if st.button("💾 HTMLをDropboxに保存", use_container_width=True):
         try:
-            html_content = _generate_html(top10, ai or {}, stats)
+            html_content = _generate_html(top10, ai or {}, stats, mode=cached_mode)
             saved_path   = _save_html(html_content)
             st.success(f"保存しました: {saved_path}")
         except Exception as e:
@@ -812,7 +864,7 @@ with col_save:
 
 with col_dl:
     try:
-        html_content = _generate_html(top10, ai or {}, stats)
+        html_content = _generate_html(top10, ai or {}, stats, mode=cached_mode)
         st.download_button(
             "⬇ HTML ダウンロード",
             html_content,
