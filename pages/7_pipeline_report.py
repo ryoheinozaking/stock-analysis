@@ -41,7 +41,7 @@ _NUMERIC_COLS = [
     "close", "funda_score", "tech_score", "total_score",
     "rev_growth", "profit_growth", "ROE", "PER", "PBR", "market_cap",
     "stop_loss", "stop_pct", "target", "entry_breakout", "entry_pullback",
-    "sepa_stage", "mom_revision",
+    "sepa_stage", "mom_revision", "div_trend",
 ]
 
 
@@ -178,6 +178,9 @@ def _render_scorecard(rank: int, row, ai_stocks: dict, key_prefix: str = "t1", m
             gran_g2  = getattr(row, "gran_g2",  False)
             dow_up   = getattr(row, "dow_uptrend", False)
 
+            ma200_v   = detail.get("ma200", None)
+            div_trend = getattr(row, "div_trend", 0) or 0
+
             ind_parts = []
             # SEPA ステージ
             sepa_color = "#26a69a" if is_sepa2 else "#666"
@@ -198,8 +201,19 @@ def _render_scorecard(rank: int, row, ai_stocks: dict, key_prefix: str = "t1", m
                 ind_parts.append('<span style="color:#26a69a">ダウ:<b>上昇</b></span>')
 
             ind_str = ("　｜　" + "　｜　".join(ind_parts)) if ind_parts else ""
+
+            # バリューモード追加指標
+            val_extra = ""
+            if mode == "value":
+                if ma200_v is not None:
+                    above200 = detail.get("ma25") is not None  # close > ma200 は tech_detail に直接ないので表示のみ
+                    val_extra += f"　／　MA200 <b>{ma200_v}</b>"
+                if div_trend >= 1:
+                    div_label = "2期連続増配" if div_trend >= 2 else "増配"
+                    val_extra += f'　／　<span style="color:#26a69a"><b>{div_label}</b></span>'
+
             st.markdown(
-                f'<span style="font-size:0.78rem;color:#aaa">RSI <b>{rsi_v}</b>　／　MA25 <b>{ma25_v}</b>{ind_str}</span>',
+                f'<span style="font-size:0.78rem;color:#aaa">RSI <b>{rsi_v}</b>　／　MA25 <b>{ma25_v}</b>{val_extra}{ind_str}</span>',
                 unsafe_allow_html=True,
             )
 
@@ -771,14 +785,20 @@ def _build_claude_text(top10: pd.DataFrame, ai: dict, market: dict, mode: str = 
     ]
     for i, r in enumerate(top10.itertuples(), 1):
         detail = r.tech_detail if isinstance(r.tech_detail, dict) else {}
-        rsi  = detail.get("rsi",  "N/A")
-        ma25 = detail.get("ma25", "N/A")
-        ma60 = detail.get("ma60", "N/A")
-        vr   = detail.get("vol_ratio", "N/A")
-        lines.append(
+        rsi   = detail.get("rsi",      "N/A")
+        ma25  = detail.get("ma25",     "N/A")
+        ma60  = detail.get("ma60",     "N/A")
+        ma200 = detail.get("ma200",    "N/A")
+        vr    = detail.get("vol_ratio", "N/A")
+        div_t = int(getattr(r, "div_trend", 0) or 0)
+        div_str = {0: "なし", 1: "増配", 2: "2期連続増配"}.get(div_t, "N/A")
+        base_line = (
             f"{i}. {r.code_4} {r.company_name}："
             f"RSI={rsi} / MA25={ma25} / MA60={ma60} / 出来高比率={vr}"
         )
+        if mode == "value":
+            base_line += f" / MA200={ma200} / 増配={div_str}"
+        lines.append(base_line)
 
     lines += [
         "",

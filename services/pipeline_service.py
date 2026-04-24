@@ -46,6 +46,7 @@ HARD_VALUE = {
     "roe_min":            8.0,    # ROE ≥ 8%
     "equity_ratio_min":  40.0,    # 自己資本比率 ≥ 40%
     "market_cap_min":   100e8,    # 時価総額 > 100億円
+    "rev_growth_min":    3.0,     # 売上成長率 ≥ 3%（死に株排除）
 }
 
 # ── ファンダ各指標の最大点数（成長株モード） ─────────────────────────────
@@ -157,6 +158,18 @@ def _build_fins_metrics(fins_fy: pd.DataFrame, prices_df: pd.DataFrame) -> pd.Da
                     if split_factor > 0:
                         sh_out = sh_out / split_factor
 
+        # 連続増配チェック（2期連続増配=2, 1期増配=1, なし=0）
+        div_trend = 0
+        d_curr = pd.to_numeric(curr.get("DivAnn"), errors="coerce")
+        if len(grp) >= 2 and pd.notna(d_curr) and d_curr > 0:
+            d_prev1 = pd.to_numeric(grp.iloc[1].get("DivAnn"), errors="coerce")
+            if pd.notna(d_prev1) and d_prev1 > 0 and d_curr > d_prev1:
+                div_trend = 1
+                if len(grp) >= 3:
+                    d_prev2 = pd.to_numeric(grp.iloc[2].get("DivAnn"), errors="coerce")
+                    if pd.notna(d_prev2) and d_prev2 > 0 and d_prev1 > d_prev2:
+                        div_trend = 2  # 2期連続増配
+
         rows.append({
             "code":         code,
             "eps_growth":   eps_g,
@@ -164,6 +177,7 @@ def _build_fins_metrics(fins_fy: pd.DataFrame, prices_df: pd.DataFrame) -> pd.Da
             "equity_ratio": equity_r,
             "sh_out":       sh_out,
             "sales_fy":     curr["Sales"],
+            "div_trend":    div_trend,
         })
 
     return pd.DataFrame(rows)
@@ -182,12 +196,13 @@ def apply_hard_filter(
 
     if mode == "value":
         mask = (
-            (df["PBR"].fillna(999)         <= HARD_VALUE["pbr_max"])          &
-            (df["PER"].fillna(999)         <= HARD_VALUE["per_max"])          &
-            (df["PER"].fillna(0)           >  0)                              &
-            (df["ROE"].fillna(0)           >= HARD_VALUE["roe_min"])          &
-            (df["equity_ratio"].fillna(0)  >= HARD_VALUE["equity_ratio_min"]) &
-            (df["market_cap"]              >= HARD_VALUE["market_cap_min"])   &
+            (df["PBR"].fillna(999)         <= HARD_VALUE["pbr_max"])           &
+            (df["PER"].fillna(999)         <= HARD_VALUE["per_max"])           &
+            (df["PER"].fillna(0)           >  0)                               &
+            (df["ROE"].fillna(0)           >= HARD_VALUE["roe_min"])           &
+            (df["equity_ratio"].fillna(0)  >= HARD_VALUE["equity_ratio_min"])  &
+            (df["market_cap"]              >= HARD_VALUE["market_cap_min"])    &
+            (df["rev_growth"].fillna(-999) >= HARD_VALUE["rev_growth_min"])    &  # 売上成長+3%（死に株排除）
             (df["op_positive"].fillna(False) == True)
         )
     else:
@@ -252,6 +267,11 @@ def calc_funda_score(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
         pct = _percentile(df[col], invert=invert)
         score += pct / 100.0 * max_pt
 
+    # 増配トレンドボーナス（バリューモードのみ: +5pt/1期, +10pt/2期連続）
+    if mode == "value" and "div_trend" in df.columns:
+        div_bonus = df["div_trend"].fillna(0).clip(0, 2) * 5.0
+        score += div_bonus
+
     df["funda_score"] = score.round(2)
     return df
 
@@ -310,9 +330,10 @@ def _tech_score_single(cp: pd.DataFrame, mode: str = "growth") -> dict:
     latest_vol   = float(vol.iloc[-1])
 
     # 移動平均
-    ma25 = float(close.rolling(25).mean().iloc[-1]) if len(close) >= 25 else np.nan
-    ma60 = float(close.rolling(60).mean().iloc[-1]) if len(close) >= 60 else np.nan
-    ma25_prev5 = float(close.rolling(25).mean().iloc[-6]) if len(close) >= 30 else np.nan
+    ma25      = float(close.rolling(25).mean().iloc[-1])  if len(close) >= 25  else np.nan
+    ma60      = float(close.rolling(60).mean().iloc[-1])  if len(close) >= 60  else np.nan
+    ma200     = float(close.rolling(200).mean().iloc[-1]) if len(close) >= 200 else np.nan
+    ma25_prev5 = float(close.rolling(25).mean().iloc[-6]) if len(close) >= 30  else np.nan
 
     # RSI
     rsi = _calc_rsi(close)
@@ -331,28 +352,45 @@ def _tech_score_single(cp: pd.DataFrame, mode: str = "growth") -> dict:
 
     # ── MA スコア（30点）
     ma_score = 0
-    if pd.notna(ma25) and pd.notna(ma60):
-        if latest_close > ma25 and ma25 > ma60:
-            ma_score = 30
-        elif latest_close > ma25 and pd.notna(ma25_prev5) and ma25 > ma25_prev5:
-            ma_score = 20
-        elif latest_close > ma60:
-            ma_score = 10
-    elif pd.notna(ma25):
-        if latest_close > ma25:
-            ma_score = 15
+    if mode == "value":
+        # バリュー株: MA200上抜けを最重視（長期底打ち確認）
+        if pd.notna(ma200) and pd.notna(ma25):
+            if latest_close > ma200 and latest_close > ma25:
+                ma_score = 30   # MA200・MA25両方上：完全底打ち確認
+            elif latest_close > ma200:
+                ma_score = 20   # MA200上抜けのみ：長期底打ち
+            elif latest_close > ma25:
+                ma_score = 15   # MA25上抜けのみ：初動（MA200未回復）
+        elif pd.notna(ma200):
+            if latest_close > ma200:
+                ma_score = 20
+        elif pd.notna(ma25):
+            if latest_close > ma25:
+                ma_score = 15
+    else:
+        # 成長株: 短中期トレンド継続を重視
+        if pd.notna(ma25) and pd.notna(ma60):
+            if latest_close > ma25 and ma25 > ma60:
+                ma_score = 30
+            elif latest_close > ma25 and pd.notna(ma25_prev5) and ma25 > ma25_prev5:
+                ma_score = 20
+            elif latest_close > ma60:
+                ma_score = 10
+        elif pd.notna(ma25):
+            if latest_close > ma25:
+                ma_score = 15
     score += ma_score
 
     # ── RSI スコア（20点）
     rsi_score = 0
     if pd.notna(rsi):
         if mode == "value":
-            # バリュー株: 底値圏からの反転（RSI 30-55 が最適エントリーゾーン）
-            if 30 <= rsi <= 55:
+            # バリュー株: 底値圏からの反転（RSI 30-45 が最適エントリーゾーン）
+            if 30 <= rsi <= 45:
                 rsi_score = 20
-            elif 55 < rsi <= 65:
+            elif 45 < rsi <= 55:    # やや高め、まだ一定評価
                 rsi_score = 10
-            elif 25 <= rsi < 30:
+            elif 25 <= rsi < 30:    # 過売り気味、慎重
                 rsi_score = 5
         else:
             # 成長株: トレンド継続（RSI 50-65 が最適）
@@ -396,9 +434,10 @@ def _tech_score_single(cp: pd.DataFrame, mode: str = "growth") -> dict:
     score += break_score
 
     detail = {
-        "ma25": round(ma25, 1)    if pd.notna(ma25) else None,
-        "ma60": round(ma60, 1)    if pd.notna(ma60) else None,
-        "rsi":  round(rsi, 1)     if pd.notna(rsi)  else None,
+        "ma25":  round(ma25, 1)  if pd.notna(ma25)  else None,
+        "ma60":  round(ma60, 1)  if pd.notna(ma60)  else None,
+        "ma200": round(ma200, 1) if pd.notna(ma200) else None,
+        "rsi":   round(rsi, 1)   if pd.notna(rsi)   else None,
         "macd": round(macd, 4)    if pd.notna(macd) else None,
         "macd_signal": round(sig, 4) if pd.notna(sig) else None,
         "vol_ratio": round(latest_vol / vol_avg25, 2) if vol_avg25 > 0 else None,
@@ -455,7 +494,7 @@ _TARGET_PCT      = 0.25   # +25%
 
 # シグナル判定ルール（バリュー株モード）
 _BUY_RSI_MIN_VALUE = 30   # 底値圏からの反転エントリー
-_BUY_RSI_MAX_VALUE = 55
+_BUY_RSI_MAX_VALUE = 45   # 30〜45 に絞る（落ちるナイフ対策）
 
 
 def calc_trade_signals(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
