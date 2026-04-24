@@ -41,7 +41,7 @@ _NUMERIC_COLS = [
     "close", "funda_score", "tech_score", "total_score",
     "rev_growth", "profit_growth", "ROE", "PER", "PBR", "market_cap",
     "stop_loss", "stop_pct", "target", "entry_breakout", "entry_pullback",
-    "sepa_stage", "mom_revision", "div_trend",
+    "sepa_stage", "mom_revision", "div_trend", "op_trend", "payout_ratio",
 ]
 
 
@@ -178,8 +178,11 @@ def _render_scorecard(rank: int, row, ai_stocks: dict, key_prefix: str = "t1", m
             gran_g2  = getattr(row, "gran_g2",  False)
             dow_up   = getattr(row, "dow_uptrend", False)
 
-            ma200_v   = detail.get("ma200", None)
-            div_trend = getattr(row, "div_trend", 0) or 0
+            ma200_v    = detail.get("ma200",    None)
+            ma200_dev  = detail.get("ma200_dev", None)
+            div_trend  = int(getattr(row, "div_trend",    0) or 0)
+            op_trend   = int(getattr(row, "op_trend",     0) or 0)
+            payout_r   = getattr(row, "payout_ratio", None)
 
             ind_parts = []
             # SEPA ステージ
@@ -205,12 +208,23 @@ def _render_scorecard(rank: int, row, ai_stocks: dict, key_prefix: str = "t1", m
             # バリューモード追加指標
             val_extra = ""
             if mode == "value":
+                # MA200乖離率
                 if ma200_v is not None:
-                    above200 = detail.get("ma25") is not None  # close > ma200 は tech_detail に直接ないので表示のみ
-                    val_extra += f"　／　MA200 <b>{ma200_v}</b>"
+                    dev_str = f"({ma200_dev:+.1f}%)" if ma200_dev is not None else ""
+                    dev_col = "#26a69a" if (ma200_dev is not None and 0 <= ma200_dev <= 5) else "#ff9800" if (ma200_dev is not None and ma200_dev > 5) else "#aaa"
+                    val_extra += f'　／　MA200 <b style="color:{dev_col}">{ma200_v}{dev_str}</b>'
+                # 営業利益トレンド
+                if op_trend >= 1:
+                    op_label = "営業益2期連続増" if op_trend >= 2 else "営業益増"
+                    val_extra += f'　／　<span style="color:#26a69a"><b>{op_label}</b></span>'
+                # 増配トレンド
                 if div_trend >= 1:
                     div_label = "2期連続増配" if div_trend >= 2 else "増配"
                     val_extra += f'　／　<span style="color:#26a69a"><b>{div_label}</b></span>'
+                # 配当性向
+                if payout_r is not None and not (isinstance(payout_r, float) and np.isnan(payout_r)):
+                    pr_col = "#26a69a" if 20 <= payout_r <= 60 else "#ff9800"
+                    val_extra += f'　／　配当性向 <b style="color:{pr_col}">{payout_r:.0f}%</b>'
 
             st.markdown(
                 f'<span style="font-size:0.78rem;color:#aaa">RSI <b>{rsi_v}</b>　／　MA25 <b>{ma25_v}</b>{val_extra}{ind_str}</span>',
@@ -797,7 +811,13 @@ def _build_claude_text(top10: pd.DataFrame, ai: dict, market: dict, mode: str = 
             f"RSI={rsi} / MA25={ma25} / MA60={ma60} / 出来高比率={vr}"
         )
         if mode == "value":
-            base_line += f" / MA200={ma200} / 増配={div_str}"
+            ma200_dev_v = detail.get("ma200_dev", None)
+            dev_str2    = f"({ma200_dev_v:+.1f}%)" if ma200_dev_v is not None else ""
+            op_t        = int(getattr(r, "op_trend", 0) or 0)
+            pr          = getattr(r, "payout_ratio", None)
+            op_str      = {0: "横ばい/減", 1: "増益", 2: "2期連続増益"}.get(op_t, "N/A")
+            pr_str      = f"{pr:.0f}%" if pr is not None and not (isinstance(pr, float) and np.isnan(pr)) else "N/A"
+            base_line += f" / MA200={ma200}{dev_str2} / 営業益={op_str} / 増配={div_str} / 配当性向={pr_str}"
         lines.append(base_line)
 
     lines += [

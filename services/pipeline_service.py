@@ -170,14 +170,35 @@ def _build_fins_metrics(fins_fy: pd.DataFrame, prices_df: pd.DataFrame) -> pd.Da
                     if pd.notna(d_prev2) and d_prev2 > 0 and d_prev1 > d_prev2:
                         div_trend = 2  # 2期連続増配
 
+        # 営業利益トレンド（2期連続増=2, 1期増=1, 横ばい/減=0）
+        op_trend = 0
+        op_curr = pd.to_numeric(curr.get("OP"), errors="coerce")
+        if len(grp) >= 2 and pd.notna(op_curr):
+            op_prev1 = pd.to_numeric(grp.iloc[1].get("OP"), errors="coerce")
+            if pd.notna(op_prev1) and op_prev1 > 0 and op_curr >= op_prev1:
+                op_trend = 1
+                if len(grp) >= 3:
+                    op_prev2 = pd.to_numeric(grp.iloc[2].get("OP"), errors="coerce")
+                    if pd.notna(op_prev2) and op_prev2 > 0 and op_prev1 >= op_prev2:
+                        op_trend = 2  # 2期連続増加
+
+        # 配当性向（DivAnn ÷ EPS × 100）
+        payout_ratio = np.nan
+        eps_curr = pd.to_numeric(curr.get("EPS"),    errors="coerce")
+        div_curr = pd.to_numeric(curr.get("DivAnn"), errors="coerce")
+        if pd.notna(eps_curr) and pd.notna(div_curr) and eps_curr > 0:
+            payout_ratio = div_curr / eps_curr * 100
+
         rows.append({
-            "code":         code,
-            "eps_growth":   eps_g,
-            "op_margin":    op_margin,
-            "equity_ratio": equity_r,
-            "sh_out":       sh_out,
-            "sales_fy":     curr["Sales"],
-            "div_trend":    div_trend,
+            "code":          code,
+            "eps_growth":    eps_g,
+            "op_margin":     op_margin,
+            "equity_ratio":  equity_r,
+            "sh_out":        sh_out,
+            "sales_fy":      curr["Sales"],
+            "div_trend":     div_trend,
+            "op_trend":      op_trend,
+            "payout_ratio":  payout_ratio,
         })
 
     return pd.DataFrame(rows)
@@ -267,10 +288,20 @@ def calc_funda_score(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
         pct = _percentile(df[col], invert=invert)
         score += pct / 100.0 * max_pt
 
-    # 増配トレンドボーナス（バリューモードのみ: +5pt/1期, +10pt/2期連続）
-    if mode == "value" and "div_trend" in df.columns:
-        div_bonus = df["div_trend"].fillna(0).clip(0, 2) * 5.0
-        score += div_bonus
+    if mode == "value":
+        # 増配トレンドボーナス（+5pt/1期, +10pt/2期連続）
+        if "div_trend" in df.columns:
+            score += df["div_trend"].fillna(0).clip(0, 2) * 5.0
+
+        # 営業利益トレンドボーナス（+5pt/1期増, +10pt/2期連続増）
+        if "op_trend" in df.columns:
+            score += df["op_trend"].fillna(0).clip(0, 2) * 5.0
+
+        # 配当性向ボーナス（健全レンジ 20〜60%: +5pt）
+        # 高すぎる配当性向（>80%）は無理増配の可能性があるため加点なし
+        if "payout_ratio" in df.columns:
+            pr = df["payout_ratio"].fillna(-1)
+            score += ((pr >= 20) & (pr <= 60)).astype(float) * 5.0
 
     df["funda_score"] = score.round(2)
     return df
@@ -351,20 +382,23 @@ def _tech_score_single(cp: pd.DataFrame, mode: str = "growth") -> dict:
     score = 0
 
     # ── MA スコア（30点）
-    ma_score = 0
+    ma_score  = 0
+    ma200_dev = np.nan   # MA200乖離率（%）
     if mode == "value":
-        # バリュー株: MA200上抜けを最重視（長期底打ち確認）
-        if pd.notna(ma200) and pd.notna(ma25):
-            if latest_close > ma200 and latest_close > ma25:
-                ma_score = 30   # MA200・MA25両方上：完全底打ち確認
-            elif latest_close > ma200:
-                ma_score = 20   # MA200上抜けのみ：長期底打ち
-            elif latest_close > ma25:
-                ma_score = 15   # MA25上抜けのみ：初動（MA200未回復）
-        elif pd.notna(ma200):
-            if latest_close > ma200:
-                ma_score = 20
-        elif pd.notna(ma25):
+        # バリュー株: MA200乖離率で精度を上げる
+        # MA200をちょうど上抜けた（0〜5%）が最高エントリー、遠いほど"出遅れ"
+        if pd.notna(ma200) and ma200 > 0:
+            ma200_dev = (latest_close - ma200) / ma200 * 100
+            if ma200_dev >= 0:       # MA200上（長期上昇転換済み）
+                if ma200_dev <= 5:
+                    ma_score = 30    # MA200をちょうど上抜け（最高）
+                elif ma200_dev <= 15:
+                    ma_score = 20    # 上抜けて間もない（良好）
+                else:
+                    ma_score = 10    # すでに大きく上昇（出遅れ気味）
+            else:                    # MA200下（長期下落継続）
+                ma_score = 0
+        elif pd.notna(ma25):         # MA200が算出不能な場合はMA25で代替
             if latest_close > ma25:
                 ma_score = 15
     else:
@@ -434,10 +468,11 @@ def _tech_score_single(cp: pd.DataFrame, mode: str = "growth") -> dict:
     score += break_score
 
     detail = {
-        "ma25":  round(ma25, 1)  if pd.notna(ma25)  else None,
-        "ma60":  round(ma60, 1)  if pd.notna(ma60)  else None,
-        "ma200": round(ma200, 1) if pd.notna(ma200) else None,
-        "rsi":   round(rsi, 1)   if pd.notna(rsi)   else None,
+        "ma25":     round(ma25, 1)     if pd.notna(ma25)     else None,
+        "ma60":     round(ma60, 1)     if pd.notna(ma60)     else None,
+        "ma200":    round(ma200, 1)    if pd.notna(ma200)    else None,
+        "ma200_dev": round(ma200_dev, 1) if pd.notna(ma200_dev) else None,
+        "rsi":      round(rsi, 1)      if pd.notna(rsi)      else None,
         "macd": round(macd, 4)    if pd.notna(macd) else None,
         "macd_signal": round(sig, 4) if pd.notna(sig) else None,
         "vol_ratio": round(latest_vol / vol_avg25, 2) if vol_avg25 > 0 else None,
