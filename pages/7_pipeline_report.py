@@ -42,6 +42,7 @@ _NUMERIC_COLS = [
     "rev_growth", "profit_growth", "ROE", "PER", "PBR", "market_cap",
     "stop_loss", "stop_pct", "target", "entry_breakout", "entry_pullback",
     "sepa_stage", "mom_revision", "div_trend", "op_trend", "payout_ratio",
+    "op_turnaround",
 ]
 
 
@@ -180,9 +181,11 @@ def _render_scorecard(rank: int, row, ai_stocks: dict, key_prefix: str = "t1", m
 
             ma200_v    = detail.get("ma200",    None)
             ma200_dev  = detail.get("ma200_dev", None)
-            div_trend  = int(getattr(row, "div_trend",    0) or 0)
-            op_trend   = int(getattr(row, "op_trend",     0) or 0)
-            payout_r   = getattr(row, "payout_ratio", None)
+            div_trend     = int(getattr(row, "div_trend",    0) or 0)
+            op_trend      = int(getattr(row, "op_trend",     0) or 0)
+            op_turnaround = bool(getattr(row, "op_turnaround", False) or False)
+            payout_r      = getattr(row, "payout_ratio", None)
+            vol_trend_r   = detail.get("vol_trend_ratio", None)
 
             ind_parts = []
             # SEPA ステージ
@@ -208,23 +211,34 @@ def _render_scorecard(rank: int, row, ai_stocks: dict, key_prefix: str = "t1", m
             # バリューモード追加指標
             val_extra = ""
             if mode == "value":
-                # MA200乖離率
-                if ma200_v is not None:
-                    dev_str = f"({ma200_dev:+.1f}%)" if ma200_dev is not None else ""
-                    dev_col = "#26a69a" if (ma200_dev is not None and 0 <= ma200_dev <= 5) else "#ff9800" if (ma200_dev is not None and ma200_dev > 5) else "#aaa"
+                # MA200乖離率（-5%以上の場合のみ表示）
+                if ma200_v is not None and ma200_dev is not None and ma200_dev >= -5:
+                    dev_str = f"({ma200_dev:+.1f}%)"
+                    if 0 <= ma200_dev <= 5:
+                        dev_col = "#26a69a"   # 緑: 最高ゾーン
+                    elif -5 <= ma200_dev < 0:
+                        dev_col = "#0891b2"   # 青: 上抜け直前
+                    else:
+                        dev_col = "#ff9800"   # 橙: 出遅れ気味
                     val_extra += f'　／　MA200 <b style="color:{dev_col}">{ma200_v}{dev_str}</b>'
-                # 営業利益トレンド
-                if op_trend >= 1:
+                # V字転換（op_turnaround 優先表示）
+                if op_turnaround:
+                    val_extra += f'　／　<span style="color:#f59e0b"><b>V字転換</b></span>'
+                elif op_trend >= 1:
                     op_label = "営業益2期連続増" if op_trend >= 2 else "営業益増"
                     val_extra += f'　／　<span style="color:#26a69a"><b>{op_label}</b></span>'
                 # 増配トレンド
                 if div_trend >= 1:
                     div_label = "2期連続増配" if div_trend >= 2 else "増配"
                     val_extra += f'　／　<span style="color:#26a69a"><b>{div_label}</b></span>'
-                # 配当性向
+                # 配当性向（上限70%のみ）
                 if payout_r is not None and not (isinstance(payout_r, float) and np.isnan(payout_r)):
-                    pr_col = "#26a69a" if 20 <= payout_r <= 60 else "#ff9800"
+                    pr_col = "#26a69a" if 0 < payout_r <= 70 else "#ff9800"
                     val_extra += f'　／　配当性向 <b style="color:{pr_col}">{payout_r:.0f}%</b>'
+                # 出来高トレンド比率
+                if vol_trend_r is not None:
+                    vt_col = "#26a69a" if vol_trend_r >= 1.3 else "#aaa"
+                    val_extra += f'　／　需給 <b style="color:{vt_col}">{vol_trend_r:.2f}x</b>'
 
             st.markdown(
                 f'<span style="font-size:0.78rem;color:#aaa">RSI <b>{rsi_v}</b>　／　MA25 <b>{ma25_v}</b>{val_extra}{ind_str}</span>',
@@ -811,13 +825,16 @@ def _build_claude_text(top10: pd.DataFrame, ai: dict, market: dict, mode: str = 
             f"RSI={rsi} / MA25={ma25} / MA60={ma60} / 出来高比率={vr}"
         )
         if mode == "value":
-            ma200_dev_v = detail.get("ma200_dev", None)
-            dev_str2    = f"({ma200_dev_v:+.1f}%)" if ma200_dev_v is not None else ""
-            op_t        = int(getattr(r, "op_trend", 0) or 0)
-            pr          = getattr(r, "payout_ratio", None)
-            op_str      = {0: "横ばい/減", 1: "増益", 2: "2期連続増益"}.get(op_t, "N/A")
-            pr_str      = f"{pr:.0f}%" if pr is not None and not (isinstance(pr, float) and np.isnan(pr)) else "N/A"
-            base_line += f" / MA200={ma200}{dev_str2} / 営業益={op_str} / 増配={div_str} / 配当性向={pr_str}"
+            ma200_dev_v  = detail.get("ma200_dev",    None)
+            vol_trend_rv = detail.get("vol_trend_ratio", None)
+            dev_str2     = f"({ma200_dev_v:+.1f}%)" if ma200_dev_v is not None else ""
+            op_t         = int(getattr(r, "op_trend",      0)     or 0)
+            op_turn      = bool(getattr(r, "op_turnaround", False) or False)
+            pr           = getattr(r, "payout_ratio", None)
+            op_str       = "V字転換" if op_turn else {0: "横ばい/減", 1: "増益", 2: "2期連続増益"}.get(op_t, "N/A")
+            pr_str       = f"{pr:.0f}%" if pr is not None and not (isinstance(pr, float) and np.isnan(pr)) else "N/A"
+            vt_str       = f"{vol_trend_rv:.2f}x" if vol_trend_rv is not None else "N/A"
+            base_line   += f" / MA200={ma200}{dev_str2} / 営業益={op_str} / 増配={div_str} / 配当性向={pr_str} / 需給={vt_str}"
         lines.append(base_line)
 
     lines += [

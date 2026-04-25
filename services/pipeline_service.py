@@ -171,7 +171,9 @@ def _build_fins_metrics(fins_fy: pd.DataFrame, prices_df: pd.DataFrame) -> pd.Da
                         div_trend = 2  # 2期連続増配
 
         # 営業利益トレンド（2期連続増=2, 1期増=1, 横ばい/減=0）
-        op_trend = 0
+        # op_turnaround: 前期減益→今期回復（V字転換）= True
+        op_trend      = 0
+        op_turnaround = False
         op_curr = pd.to_numeric(curr.get("OP"), errors="coerce")
         if len(grp) >= 2 and pd.notna(op_curr):
             op_prev1 = pd.to_numeric(grp.iloc[1].get("OP"), errors="coerce")
@@ -179,8 +181,11 @@ def _build_fins_metrics(fins_fy: pd.DataFrame, prices_df: pd.DataFrame) -> pd.Da
                 op_trend = 1
                 if len(grp) >= 3:
                     op_prev2 = pd.to_numeric(grp.iloc[2].get("OP"), errors="coerce")
-                    if pd.notna(op_prev2) and op_prev2 > 0 and op_prev1 >= op_prev2:
-                        op_trend = 2  # 2期連続増加
+                    if pd.notna(op_prev2) and op_prev2 > 0:
+                        if op_prev1 >= op_prev2:
+                            op_trend = 2       # 2期連続増加
+                        else:
+                            op_turnaround = True  # 前期減益→今期回復（V字転換）
 
         # 配当性向（DivAnn ÷ EPS × 100）
         payout_ratio = np.nan
@@ -190,15 +195,16 @@ def _build_fins_metrics(fins_fy: pd.DataFrame, prices_df: pd.DataFrame) -> pd.Da
             payout_ratio = div_curr / eps_curr * 100
 
         rows.append({
-            "code":          code,
-            "eps_growth":    eps_g,
-            "op_margin":     op_margin,
-            "equity_ratio":  equity_r,
-            "sh_out":        sh_out,
-            "sales_fy":      curr["Sales"],
-            "div_trend":     div_trend,
-            "op_trend":      op_trend,
-            "payout_ratio":  payout_ratio,
+            "code":           code,
+            "eps_growth":     eps_g,
+            "op_margin":      op_margin,
+            "equity_ratio":   equity_r,
+            "sh_out":         sh_out,
+            "sales_fy":       curr["Sales"],
+            "div_trend":      div_trend,
+            "op_trend":       op_trend,
+            "op_turnaround":  op_turnaround,
+            "payout_ratio":   payout_ratio,
         })
 
     return pd.DataFrame(rows)
@@ -297,11 +303,16 @@ def calc_funda_score(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
         if "op_trend" in df.columns:
             score += df["op_trend"].fillna(0).clip(0, 2) * 5.0
 
-        # 配当性向ボーナス（健全レンジ 20〜60%: +5pt）
-        # 高すぎる配当性向（>80%）は無理増配の可能性があるため加点なし
+        # V字転換ボーナス（前期減益→今期回復: +15pt）
+        # 2期連続増益（+10pt）より重く評価 = 最も上昇しやすいゾーン
+        if "op_turnaround" in df.columns:
+            score += df["op_turnaround"].fillna(False).astype(float) * 15.0
+
+        # 配当性向ボーナス（上限70%のみ: +5pt）
+        # 下限なし → 低配当でも内部留保中の優良企業を排除しない
         if "payout_ratio" in df.columns:
             pr = df["payout_ratio"].fillna(-1)
-            score += ((pr >= 20) & (pr <= 60)).astype(float) * 5.0
+            score += ((pr > 0) & (pr <= 70)).astype(float) * 5.0
 
     df["funda_score"] = score.round(2)
     return df
@@ -361,10 +372,14 @@ def _tech_score_single(cp: pd.DataFrame, mode: str = "growth") -> dict:
     latest_vol   = float(vol.iloc[-1])
 
     # 移動平均
-    ma25      = float(close.rolling(25).mean().iloc[-1])  if len(close) >= 25  else np.nan
-    ma60      = float(close.rolling(60).mean().iloc[-1])  if len(close) >= 60  else np.nan
-    ma200     = float(close.rolling(200).mean().iloc[-1]) if len(close) >= 200 else np.nan
-    ma25_prev5 = float(close.rolling(25).mean().iloc[-6]) if len(close) >= 30  else np.nan
+    ma25       = float(close.rolling(25).mean().iloc[-1])  if len(close) >= 25  else np.nan
+    ma60       = float(close.rolling(60).mean().iloc[-1])  if len(close) >= 60  else np.nan
+    ma200      = float(close.rolling(200).mean().iloc[-1]) if len(close) >= 200 else np.nan
+    ma25_prev5 = float(close.rolling(25).mean().iloc[-6])  if len(close) >= 30  else np.nan
+
+    # 出来高移動平均（バリューモード用: 5日平均/20日平均でトレンドを評価）
+    vol_avg5  = float(vol.rolling(5).mean().iloc[-1])  if len(vol) >= 5  else float(vol.mean())
+    vol_avg20 = float(vol.rolling(20).mean().iloc[-1]) if len(vol) >= 20 else float(vol.mean())
 
     # RSI
     rsi = _calc_rsi(close)
@@ -389,14 +404,16 @@ def _tech_score_single(cp: pd.DataFrame, mode: str = "growth") -> dict:
         # MA200をちょうど上抜けた（0〜5%）が最高エントリー、遠いほど"出遅れ"
         if pd.notna(ma200) and ma200 > 0:
             ma200_dev = (latest_close - ma200) / ma200 * 100
-            if ma200_dev >= 0:       # MA200上（長期上昇転換済み）
+            if ma200_dev >= 0:         # MA200上（長期上昇転換済み）
                 if ma200_dev <= 5:
-                    ma_score = 30    # MA200をちょうど上抜け（最高）
+                    ma_score = 30      # MA200をちょうど上抜け（最高）
                 elif ma200_dev <= 15:
-                    ma_score = 20    # 上抜けて間もない（良好）
+                    ma_score = 20      # 上抜けて間もない（良好）
                 else:
-                    ma_score = 10    # すでに大きく上昇（出遅れ気味）
-            else:                    # MA200下（長期下落継続）
+                    ma_score = 10      # すでに大きく上昇（出遅れ気味）
+            elif ma200_dev >= -5:      # MA200直下（上抜け直前）
+                ma_score = 15          # 初動狙い：上抜け直前ゾーン
+            else:                      # MA200から5%超下（長期下落継続）
                 ma_score = 0
         elif pd.notna(ma25):         # MA200が算出不能な場合はMA25で代替
             if latest_close > ma25:
@@ -451,12 +468,24 @@ def _tech_score_single(cp: pd.DataFrame, mode: str = "growth") -> dict:
 
     # ── 出来高スコア（15点）
     vol_score = 0
-    if vol_avg25 > 0:
-        ratio = latest_vol / vol_avg25
-        if ratio >= 1.5:
-            vol_score = 15
-        elif ratio >= 1.0:
-            vol_score = 10
+    if mode == "value":
+        # バリュー株: 5日平均 ÷ 20日平均でじわじわ買い集められているかを評価
+        if vol_avg20 > 0:
+            vol_trend_ratio = vol_avg5 / vol_avg20
+            if vol_trend_ratio >= 1.3:
+                vol_score = 15   # 出来高増加トレンド（明確な需給変化）
+            elif vol_trend_ratio >= 1.0:
+                vol_score = 10   # 横ばい〜微増（静かな買い集め）
+            else:
+                vol_score = 0    # 出来高減少（誰も買っていない）
+    else:
+        # 成長株: 当日出来高 ÷ 25日平均（ブレイク日の急増を評価）
+        if vol_avg25 > 0:
+            ratio = latest_vol / vol_avg25
+            if ratio >= 1.5:
+                vol_score = 15
+            elif ratio >= 1.0:
+                vol_score = 10
     score += vol_score
 
     # ── 高値ブレイクスコア（15点）
@@ -475,7 +504,8 @@ def _tech_score_single(cp: pd.DataFrame, mode: str = "growth") -> dict:
         "rsi":      round(rsi, 1)      if pd.notna(rsi)      else None,
         "macd": round(macd, 4)    if pd.notna(macd) else None,
         "macd_signal": round(sig, 4) if pd.notna(sig) else None,
-        "vol_ratio": round(latest_vol / vol_avg25, 2) if vol_avg25 > 0 else None,
+        "vol_ratio":       round(latest_vol / vol_avg25, 2) if vol_avg25 > 0 else None,
+        "vol_trend_ratio": round(vol_avg5 / vol_avg20, 2)  if vol_avg20 > 0 else None,
         "ma_score": ma_score, "rsi_score": rsi_score,
         "macd_score": macd_score, "vol_score": vol_score,
         "break_score": break_score,
