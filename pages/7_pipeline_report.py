@@ -40,7 +40,7 @@ _REPORT_DIR = os.path.join(_DROPBOX, "投資レポート")
 _NUMERIC_COLS = [
     "close", "funda_score", "tech_score", "total_score",
     "rev_growth", "profit_growth", "ROE", "PER", "PBR", "market_cap",
-    "stop_loss", "stop_pct", "target", "entry_breakout", "entry_pullback",
+    "stop_loss", "stop_pct", "target", "target2", "entry_breakout", "entry_pullback",
     "sepa_stage", "mom_revision", "div_trend", "op_trend", "payout_ratio",
     "op_turnaround",
 ]
@@ -261,16 +261,24 @@ def _render_scorecard(rank: int, row, ai_stocks: dict, key_prefix: str = "t1", m
             stop    = getattr(row, "stop_loss", None)
             stopp   = getattr(row, "stop_pct",  None)
             tgt     = getattr(row, "target",    None)
+            tgt2    = getattr(row, "target2",   None)
+            tgt_pct = getattr(row, "target_pct", 25)
             eb      = getattr(row, "entry_breakout", None)
             ep      = getattr(row, "entry_pullback", None)
             sreason = getattr(row, "signal_reason", "")
-            pc1, pc2, pc3, pc4 = st.columns(4)
+            has_tgt2 = (tgt2 is not None) and not (isinstance(tgt2, float) and np.isnan(tgt2))
+            if has_tgt2:
+                pc1, pc2, pc3, pc4, pc5 = st.columns(5)
+            else:
+                pc1, pc2, pc3, pc4 = st.columns(4)
             if eb and pd.notna(eb):   pc1.metric("ブレイクエントリー", f"¥{eb:,.0f}")
             if ep and pd.notna(ep):   pc2.metric("押し目エントリー",   f"¥{ep:,.0f}")
             if stop: pc3.metric("損切りライン", f"¥{stop:,.0f}",
                                 delta=f"{stopp:.1f}%" if stopp else None,
                                 delta_color="inverse")
-            if tgt:  pc4.metric("利確目標 (+25%)", f"¥{tgt:,.0f}")
+            tgt_label = f"第1利確 (+{tgt_pct:.0f}%)" if has_tgt2 else f"利確目標 (+{tgt_pct:.0f}%)"
+            if tgt and pd.notna(tgt):  pc4.metric(tgt_label, f"¥{tgt:,.0f}")
+            if has_tgt2:               pc5.metric("第2利確 (+40%)", f"¥{tgt2:,.0f}")
             if sreason and signal == "WATCH":
                 st.caption(f"WATCH理由: {sreason}")
 
@@ -560,16 +568,23 @@ with st.sidebar:
     if mode == "value":
         st.markdown("""
 - **ハードフィルタ（バリュー）**
-  - PBR ≤ 1.5
-  - PER ≤ 20（かつ正値）
-  - ROE ≥ 8%
-  - 自己資本比率 ≥ 40%
-  - 時価総額 > 100億
+  - PBR ≤ 1.5 / PER ≤ 25（かつ正値）
+  - ROE ≥ 8% / 自己資本比率 ≥ 40%
+  - 時価総額 > 100億 / 売上成長 ≥ 3%
+  - シクリカル5業種除外（鉄鋼/海運業/その他製品/鉱業/ゴム製品）
 - **ファンダ** (60%)
   - Value 50% / Quality 25% / Growth 25%
+  - V字転換+15pt / 2期増益+10pt / 増配+10pt
 - **テクニカル** (40%)
-  - MA 30pt / RSI 20pt（30-55）/ MACD 20pt
-  - 出来高 15pt / 高値ブレイク 15pt
+  - MA200乖離 30pt / RSI 20pt（30-50）
+  - MACD 20pt / 需給 15pt / 高値ブレイク 15pt
+- **BUYシグナル条件**
+  - 総合≥60 / テクニカル≥55 / RSI 30-50
+- **利確目標**
+  - 第1目標 +35% / 第2目標 +40%
+  - 損切り -15%（or MA25の高い方）
+- **⚠️ ローテーションルール**
+  - 市場が強気転換時は成長株モードへ切替推奨
 """)
     else:
         st.markdown("""

@@ -42,12 +42,27 @@ HARD = {
 # ── ハードフィルタ閾値（バリュー株モード） ──────────────────────────────
 HARD_VALUE = {
     "pbr_max":           1.5,     # PBR ≤ 1.5
-    "per_max":           20.0,    # PER ≤ 20（かつ正値）
+    "per_max":           25.0,    # PER ≤ 25（かつ正値）← 日本の割安成長株を拾うため20→25
     "roe_min":            8.0,    # ROE ≥ 8%
     "equity_ratio_min":  40.0,    # 自己資本比率 ≥ 40%
     "market_cap_min":   100e8,    # 時価総額 > 100億円
     "rev_growth_min":    3.0,     # 売上成長率 ≥ 3%（死に株排除）
 }
+
+# ── バリュー株モードで除外するシクリカル業種 ──────────────────────────
+# 業績がコモディティ価格に連動するため、業績ピーク時に「割安」に見えて
+# その後業績正常化で株価が下がる典型的なバリュートラップを排除する。
+# バックテスト（2024-04/2024-10/2025-04）で5業種除外が全項目改善を確認：
+#   - 全体平均 22.25% → 23.77% / 中央値 13.82% → 15.62%
+#   - 勝率 70.5% → 71.8% / トラップ率 5.4% → 3.4%（半減以下）
+#   - 2024-04の勝率 42% → 48%（最弱期間が改善）
+EXCLUDE_SECTORS_VALUE = [
+    "鉄鋼",
+    "海運業",
+    "その他製品",
+    "鉱業",
+    "ゴム製品",
+]
 
 # ── ファンダ各指標の最大点数（成長株モード） ─────────────────────────────
 FUNDA_MAX = {
@@ -230,7 +245,8 @@ def apply_hard_filter(
             (df["equity_ratio"].fillna(0)  >= HARD_VALUE["equity_ratio_min"])  &
             (df["market_cap"]              >= HARD_VALUE["market_cap_min"])    &
             (df["rev_growth"].fillna(-999) >= HARD_VALUE["rev_growth_min"])    &  # 売上成長+3%（死に株排除）
-            (df["op_positive"].fillna(False) == True)
+            (df["op_positive"].fillna(False) == True)                          &
+            (~df["sector"].isin(EXCLUDE_SECTORS_VALUE))                          # シクリカル5業種除外
         )
     else:
         mask = (
@@ -558,8 +574,11 @@ _STOP_LOSS_PCT   = 0.15   # -15%
 _TARGET_PCT      = 0.25   # +25%
 
 # シグナル判定ルール（バリュー株モード）
-_BUY_RSI_MIN_VALUE = 30   # 底値圏からの反転エントリー
-_BUY_RSI_MAX_VALUE = 45   # 30〜45 に絞る（落ちるナイフ対策）
+_BUY_TECH_MIN_VALUE  = 55    # Tech閾値を緩和（60→55）初動後半も拾う
+_BUY_RSI_MIN_VALUE   = 30    # 底値圏からの反転エントリー
+_BUY_RSI_MAX_VALUE   = 50    # RSI上限を緩和（45→50）機会損失を減らす
+_TARGET_PCT_VALUE    = 0.35  # 第1利確目標 +35%
+_TARGET2_PCT_VALUE   = 0.40  # 第2利確目標 +40%（分割利確の目安）
 
 
 def calc_trade_signals(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
@@ -571,18 +590,21 @@ def calc_trade_signals(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
       signal_reason : 判定根拠の説明
       entry_breakout: ブレイクアウトエントリー価格
       entry_pullback: 押し目エントリー価格（MA25水準）
-      stop_loss     : 損切り価格（-8% or MA25 の高い方）
+      stop_loss     : 損切り価格（-15% or MA25 の高い方）
       stop_pct      : 損切り幅（%）
-      target        : 利確目標価格（+25%）
+      target        : 利確目標価格（成長株+25% / バリュー+35%）
       target_pct    : 利益目標（%）
+      target2       : 第2利確目標（バリューのみ +40%。成長株は NaN）
     """
     df = df.copy()
     signals, reasons = [], []
-    entries_b, entries_p, stops, stop_pcts, targets = [], [], [], [], []
+    entries_b, entries_p, stops, stop_pcts, targets, targets2 = [], [], [], [], [], []
 
-    # モード別 RSI 範囲
-    rsi_min = _BUY_RSI_MIN_VALUE if mode == "value" else _BUY_RSI_MIN
-    rsi_max = _BUY_RSI_MAX_VALUE if mode == "value" else _BUY_RSI_MAX
+    # モード別設定
+    rsi_min   = _BUY_RSI_MIN_VALUE   if mode == "value" else _BUY_RSI_MIN
+    rsi_max   = _BUY_RSI_MAX_VALUE   if mode == "value" else _BUY_RSI_MAX
+    tech_min  = _BUY_TECH_MIN_VALUE  if mode == "value" else _BUY_TECH_MIN
+    target_pct_val = _TARGET_PCT_VALUE if mode == "value" else _TARGET_PCT
 
     for _, row in df.iterrows():
         close      = float(row["close"])
@@ -596,20 +618,17 @@ def calc_trade_signals(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
         above_ma25 = (ma25 is not None) and (close > ma25)
         rsi_ok     = (rsi  is not None) and (rsi_min <= rsi <= rsi_max)
 
-        if (total >= _BUY_TOTAL_MIN and tech >= _BUY_TECH_MIN
+        if (total >= _BUY_TOTAL_MIN and tech >= tech_min
                 and above_ma25 and rsi_ok):
             sig = "BUY"
-            parts = []
-            if not above_ma25: parts.append("MA25下")
-            if not rsi_ok:     parts.append(f"RSI={rsi:.0f}" if rsi else "RSI欠損")
             reason = "全条件クリア"
         elif total >= _WATCH_TOTAL_MIN:
             sig = "WATCH"
             parts = []
-            if total < _BUY_TOTAL_MIN:    parts.append(f"総合{total:.0f}<60")
-            if tech  < _BUY_TECH_MIN:     parts.append(f"テクニカル{tech:.0f}<60")
-            if not above_ma25:            parts.append("MA25下")
-            if not rsi_ok:                parts.append(f"RSI={rsi:.0f}(対象:{rsi_min}-{rsi_max})" if rsi else "RSI範囲外")
+            if total < _BUY_TOTAL_MIN:  parts.append(f"総合{total:.0f}<60")
+            if tech  < tech_min:        parts.append(f"テクニカル{tech:.0f}<{tech_min:.0f}")
+            if not above_ma25:          parts.append("MA25下")
+            if not rsi_ok:              parts.append(f"RSI={rsi:.0f}(対象:{rsi_min}-{rsi_max})" if rsi else "RSI範囲外")
             reason = " / ".join(parts) if parts else "スコア基準は満たすが条件不足"
         else:
             sig    = "AVOID"
@@ -619,13 +638,14 @@ def calc_trade_signals(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
         entry_b = round(close * 1.005)          # ブレイクアウト（0.5%上）
         # 押し目エントリー: MA25 < close の時のみ意味がある
         entry_p = round(ma25) if (ma25 and close > ma25) else None
-        # 損切り: close > MA25 なら max(-8%, MA25)。MA25下なら単純-8%
+        # 損切り: close > MA25 なら max(-15%, MA25)。MA25下なら単純-15%
         if ma25 and close > ma25:
             stop = round(max(close * (1 - _STOP_LOSS_PCT), ma25))
         else:
             stop = round(close * (1 - _STOP_LOSS_PCT))
         stop_p  = round((stop - close) / close * 100, 1)
-        target  = round(close * (1 + _TARGET_PCT))
+        target  = round(close * (1 + target_pct_val))
+        target2 = round(close * (1 + _TARGET2_PCT_VALUE)) if mode == "value" else np.nan
 
         signals.append(sig)
         reasons.append(reason)
@@ -634,6 +654,7 @@ def calc_trade_signals(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
         stops.append(stop)
         stop_pcts.append(stop_p)
         targets.append(target)
+        targets2.append(target2)
 
     df["signal"]         = signals
     df["signal_reason"]  = reasons
@@ -642,7 +663,8 @@ def calc_trade_signals(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
     df["stop_loss"]      = stops
     df["stop_pct"]       = stop_pcts
     df["target"]         = targets
-    df["target_pct"]     = _TARGET_PCT * 100
+    df["target_pct"]     = target_pct_val * 100
+    df["target2"]        = targets2
 
     # BUY → WATCH → AVOID の順に並べ替え（同一シグナル内はtotal_score順を維持）
     order = {"BUY": 0, "WATCH": 1, "AVOID": 2}

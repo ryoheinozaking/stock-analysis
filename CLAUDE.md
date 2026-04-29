@@ -81,7 +81,9 @@ stock_analysis/
 │   ├── 2_stock_detail.py         # 銘柄詳細（チャート・財務・適時開示タブ）
 │   ├── 3_disclosures.py          # 適時開示（3タブ: 一覧 / AI要約フィルタ / 要約済み一覧）
 │   ├── 4_portfolio.py            # ポートフォリオ（SBI CSV読み込み・損益・ヒートマップ）
-│   └── 5_portfolio_analysis.py   # AI分析（Claude APIによる総評・銘柄別売買提案）
+│   ├── 5_portfolio_analysis.py   # AI分析（Claude APIによる総評・銘柄別売買提案）
+│   ├── 7_pipeline_report.py      # パイプラインレポート（成長株/バリュー株モード切替）
+│   └── 8_backtest_value.py       # バリュー株モード バックテスト（クロスセクション）
 │
 ├── services/
 │   ├── jquants_service.py        # J-Quants API v2 ラッパー（@st.cache_data付き）
@@ -89,7 +91,9 @@ stock_analysis/
 │   ├── batch_service.py          # 全銘柄メトリクス一括取得・stock_cache.csv管理
 │   ├── claude_service.py         # Claude API統合（ポートフォリオ分析・IR要約）
 │   ├── ir_service.py             # 適時開示フィルタリング（3層分類）・PDF抽出
-│   └── portfolio_service.py      # SBI証券CSV パーサー（CP932デコード）
+│   ├── portfolio_service.py      # SBI証券CSV パーサー（CP932デコード）
+│   ├── pipeline_service.py       # パイプライン本体（ハードフィルタ→スコアリング→Claude分析）
+│   └── backtest_value_service.py # バリュー株バックテスト（過去スナップショット再現）
 │
 ├── components/
 │   ├── chart.py                  # Plotly OHLCVチャート（MA・BB・MACD・RSI・一目均衡表等）
@@ -172,6 +176,43 @@ stock_analysis/
 - モデル: `claude-haiku-4-5-20251001`
 - 料金: 入力 $0.80/MTok・出力 $4.00/MTok
 - 月次上限: $10（console.anthropic.comで設定済み）
+
+---
+
+## バリュー株モード仕様（pipeline_service.py / 7_pipeline_report.py）
+
+### ハードフィルタ（HARD_VALUE）
+- PBR ≤ 1.5 / PER ≤ 25（かつ正値）
+- ROE ≥ 8% / 自己資本比率 ≥ 40%
+- 時価総額 > 100億 / 売上成長率 ≥ 3%
+- **シクリカル5業種除外** (`EXCLUDE_SECTORS_VALUE`): 鉄鋼/海運業/その他製品/鉱業/ゴム製品
+
+### ファンダスコア（FUNDA_MAX_VALUE / 100点満点+ボーナス）
+- Value 50pt（PBR 20 / PER 20 / PSR 10）
+- Quality 25pt（ROE 10 / op_margin 10 / 自己資本比率 5）
+- Growth 25pt（rev_growth 10 / profit_growth 10 / eps_growth 5）
+- ボーナス: V字転換 +15pt / 2期連続増配/増益 各 +10pt / 配当性向 0-70% +5pt
+
+### テクニカルスコア（成長株モードと共通の関数で mode 分岐）
+- MA 30pt: MA200乖離率で評価（0〜+5%が30pt最高、+5〜+15%が20pt、+15%超は10pt、-5〜0%は15pt）
+- RSI 20pt: 30-50ゾーンを最高評価（成長株は50-65）
+- MACD 20pt / 出来高（5日/20日比） 15pt / 高値ブレイク 15pt
+
+### シグナル判定
+- BUY: 総合 ≥ 60 / テクニカル ≥ 55 / RSI 30-50 / 株価 > MA25
+- WATCH: 総合 ≥ 50（条件不足の場合）
+- 利確: 第1目標 +35% / 第2目標 +40%
+- 損切り: -15%（or MA25の高い方）
+
+### バックテスト検証実績（2024-04 / 2024-10 / 2025-04 の3スナップショット × 12ヶ月フォワード）
+| 指標 | Top50 | 非選定群 | 差分 |
+|---|---|---|---|
+| 平均リターン | 23.93% | 12.84% | +11.09% |
+| 中央値 | 15.63% | 4.37% | +11.26% |
+| 勝率 | 71.8% | 59.0% | +12.8pt |
+| バリュートラップ率（≤-20%） | 3.4% | 9.8% | -6.4pt |
+
+シクリカル5業種除外導入前: 全体平均22.25% / トラップ率5.4% から改善。
 
 ---
 
