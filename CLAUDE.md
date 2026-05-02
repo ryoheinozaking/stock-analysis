@@ -193,7 +193,10 @@ stock_analysis/
 - Value 90pt（PBR 50 / PSR 30 / PER 10）
 - Quality 10pt（op_margin のみ）
 - 撤廃: ROE / rev_growth / profit_growth / eps_growth / equity_ratio（IC≈0 または逆効果）
-- ボーナス（保持）: V字転換 +15pt / 2期連続増配/増益 各 +10pt / 配当性向 0-70% +5pt
+- ボーナス（経営変化シグナル）:
+  - V字転換 +15pt / 2期連続増益 +10pt / 1期増益 +5pt
+  - 2期連続増配 +10pt / 1期増配 +5pt
+  - 配当性向 40-70% +10pt / 25-40% +5pt（2026-04-30 段階評価に改訂）
 
 各指標の Rank IC（37ヶ月平均、IC>0.10 で実用レベル）:
 - PBR +0.151（37/37 月でプラス）/ PSR +0.143 / PER +0.082 ← 採用

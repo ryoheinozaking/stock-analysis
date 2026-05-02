@@ -336,7 +336,11 @@ def calc_funda_score(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
         score += pct / 100.0 * max_pt
 
     if mode == "value":
-        # 増配トレンドボーナス（+5pt/1期, +10pt/2期連続）
+        # ── 経営変化シグナル群（バリュー戦略の真の α 源）
+        # 「PBR 改善 = 利益改善 × 経営の意志」という前提で、後者を捕捉する
+
+        # 増配トレンドボーナス（+5pt/1期, +10pt/2期連続増配）
+        # → 株主還元方針の継続性シグナル
         if "div_trend" in df.columns:
             score += df["div_trend"].fillna(0).clip(0, 2) * 5.0
 
@@ -349,11 +353,21 @@ def calc_funda_score(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
         if "op_turnaround" in df.columns:
             score += df["op_turnaround"].fillna(False).astype(float) * 15.0
 
-        # 配当性向ボーナス（上限70%のみ: +5pt）
-        # 下限なし → 低配当でも内部留保中の優良企業を排除しない
+        # 配当性向ボーナス（段階評価）
+        # 【2026-04-30 改訂】従来は 0-70% で一律 +5pt の二値判定だったが、
+        # 「株主還元の積極性」を正確に捉えるため段階評価に変更。
+        # ChatGPT-5 の「経営変化スコア」フレームワーク参考。
+        #   - 高配当性向 (40-70%):  積極的な還元姿勢          → +10pt
+        #   - 中配当性向 (25-40%):  健全な還元水準            → +5pt
+        #   - 低配当性向 (0-25%):   還元不足 or 内部留保偏重   → 0pt
+        #   - 異常高配当 (>70%):    持続性に疑問              → 0pt
         if "payout_ratio" in df.columns:
             pr = df["payout_ratio"].fillna(-1)
-            score += ((pr > 0) & (pr <= 70)).astype(float) * 5.0
+            # 40-70%: +10pt
+            score += ((pr >= 40) & (pr <= 70)).astype(float) * 10.0
+            # 25-40%: +5pt
+            score += ((pr >= 25) & (pr < 40)).astype(float) * 5.0
+            # 0-25% および >70% は 0pt
 
     df["funda_score"] = score.round(2)
     return df
