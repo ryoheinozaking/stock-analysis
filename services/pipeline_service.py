@@ -23,6 +23,7 @@ import pandas as pd
 from services.split_adjust import (
     normalize_close, normalize_volume, normalize_high, split_factor_between,
 )
+from services.governance_score import calc_governance_score_for_df
 
 _ROOT             = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _STOCK_CACHE_PATH = os.path.join(_ROOT, "data", "stock_cache.parquet")
@@ -338,6 +339,15 @@ def calc_funda_score(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
     if mode == "value":
         # ── 経営変化シグナル群（バリュー戦略の真の α 源）
         # 「PBR 改善 = 利益改善 × 経営の意志」という前提で、後者を捕捉する
+
+        # アクティビスト保有ボーナス（+10pt）
+        # 旧村上ファンド・ストラテジックキャピタル・3D・エフィッシモ等の
+        # 物言う株主保有銘柄は「外圧で経営が変わらざるを得ない」状況。
+        # MVP 実装。データソース: data/governance_activists.json
+        # （EDINET DB の get_activist_positions バルク結果を保存）
+        if "code_4" in df.columns:
+            governance = calc_governance_score_for_df(df, code_4_col="code_4")
+            score = score + governance
 
         # 増配トレンドボーナス（+5pt/1期, +10pt/2期連続増配）
         # → 株主還元方針の継続性シグナル

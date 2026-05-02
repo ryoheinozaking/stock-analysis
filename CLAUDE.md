@@ -193,10 +193,25 @@ stock_analysis/
 - Value 90pt（PBR 50 / PSR 30 / PER 10）
 - Quality 10pt（op_margin のみ）
 - 撤廃: ROE / rev_growth / profit_growth / eps_growth / equity_ratio（IC≈0 または逆効果）
-- ボーナス（経営変化シグナル）:
+- ボーナス（経営変化シグナル / "PBR 改善 = 利益改善 × 経営の意志" の後者を捕捉）:
+  - **アクティビスト保有 +10pt**（2026-04-30 追加 / EDINET DB MCP）
   - V字転換 +15pt / 2期連続増益 +10pt / 1期増益 +5pt
   - 2期連続増配 +10pt / 1期増配 +5pt
   - 配当性向 40-70% +10pt / 25-40% +5pt（2026-04-30 段階評価に改訂）
+
+### 経営変化スコア（governance_score.py）
+**【2026-04-30 新設】** ChatGPT-5 提案フレームワークに基づく経営の意志の数値化。
+- データソース: `data/governance_activists.json` (EDINET DB MCP `get_activist_positions` バルク取得)
+- 現状（MVP）: アクティビスト保有 +10pt のみ
+  - カバレッジ: 全市場 442 銘柄が物言う株主に保有されている
+  - フィルタ通過 358 銘柄中 39 銘柄 (10.9%) がアクティビスト保有
+- 月次でリフレッシュ推奨（手動・ENV キーで EDINET DB API 直接取得も可能）
+
+#### 拡張予定（Phase 2.5+）
+- PBR 開示検出（search_ir_sections, theme_tag=fin:tse_capital_awareness）
+- 自社株買い実績（get_events で時系列収集）
+- 政策保有株削減（get_cross_shareholdings YoY 比較）
+- ROIC/WACC 開示・中計 ROE/PBR 目標
 
 各指標の Rank IC（37ヶ月平均、IC>0.10 で実用レベル）:
 - PBR +0.151（37/37 月でプラス）/ PSR +0.143 / PER +0.082 ← 採用
