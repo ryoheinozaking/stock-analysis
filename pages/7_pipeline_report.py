@@ -161,15 +161,29 @@ def _render_scorecard(rank: int, row, ai_stocks: dict, key_prefix: str = "t1", m
         m2.metric("ファンダ",   f"{row.funda_score:.1f}")
         m3.metric("テクニカル", f"{row.tech_score:.1f}")
         m4.metric("株価",       f"¥{row.close:,.0f}")
-        m5.metric("ROE",        f"{row.ROE:.1f}%")
-        m6.metric("PER",        f"{row.PER:.1f}x")
+        # バリューモードは PBR/PSR を主軸表示、成長株モードは ROE/PER を表示
+        if mode == "value":
+            psr_v = getattr(row, "psr", None)
+            psr_s = f"{psr_v:.2f}x" if psr_v is not None and not (isinstance(psr_v, float) and np.isnan(psr_v)) else "N/A"
+            m5.metric("PBR",    f"{row.PBR:.2f}x")
+            m6.metric("PSR",    psr_s)
+        else:
+            m5.metric("ROE",    f"{row.ROE:.1f}%")
+            m6.metric("PER",    f"{row.PER:.1f}x")
 
         d1, d2 = st.columns(2)
         with d1:
-            st.caption(
-                f"売上成長 **{row.rev_growth:.1f}%** ／ 利益成長 **{row.profit_growth:.1f}%** ／ "
-                f"PBR **{row.PBR:.1f}x**"
-            )
+            if mode == "value":
+                # バリューモードは PER / ROE / 売上成長を補足情報として表示
+                st.caption(
+                    f"PER **{row.PER:.1f}x** ／ ROE **{row.ROE:.1f}%** ／ "
+                    f"売上成長 **{row.rev_growth:.1f}%** ／ 利益成長 **{row.profit_growth:.1f}%**"
+                )
+            else:
+                st.caption(
+                    f"売上成長 **{row.rev_growth:.1f}%** ／ 利益成長 **{row.profit_growth:.1f}%** ／ "
+                    f"PBR **{row.PBR:.1f}x**"
+                )
         with d2:
             detail   = row.tech_detail if isinstance(row.tech_detail, dict) else {}
             rsi_v    = detail.get("rsi", "N/A")
@@ -387,6 +401,31 @@ def _generate_html(top10: pd.DataFrame, ai: dict, stats: dict, mode: str = "grow
         sepa2_html = '<span class="sepa2-badge">SEPA2</span>' if is_sepa2 else ""
         judg_html  = f'<span class="judgment" style="background:{jcolor}">{judgment}</span>' if judgment else ""
 
+        # バリューモードは PBR/PSR を主軸表示、成長株モードは ROE/PER を表示
+        if mode == "value":
+            psr_v = getattr(row, "psr", None)
+            psr_str = f"{psr_v:.2f}x" if psr_v is not None and not (isinstance(psr_v, float) and np.isnan(psr_v)) else "N/A"
+            score_html = f"""
+            <div class="score-item"><span class="label">総合</span><span class="value total">{row.total_score:.1f}</span></div>
+            <div class="score-item"><span class="label">ファンダ</span><span class="value">{row.funda_score:.1f}</span></div>
+            <div class="score-item"><span class="label">テクニカル</span><span class="value">{row.tech_score:.1f}</span></div>
+            <div class="score-item"><span class="label">株価</span><span class="value">¥{row.close:,.0f}</span></div>
+            <div class="score-item"><span class="label">PBR</span><span class="value">{row.PBR:.2f}x</span></div>
+            <div class="score-item"><span class="label">PSR</span><span class="value">{psr_str}</span></div>
+            """
+            metrics_line = (f"PER {row.PER:.1f}x ／ ROE {row.ROE:.1f}% ／ "
+                            f"売上成長 {row.rev_growth:.1f}% ／ 利益成長 {row.profit_growth:.1f}%")
+        else:
+            score_html = f"""
+            <div class="score-item"><span class="label">総合</span><span class="value total">{row.total_score:.1f}</span></div>
+            <div class="score-item"><span class="label">ファンダ</span><span class="value">{row.funda_score:.1f}</span></div>
+            <div class="score-item"><span class="label">テクニカル</span><span class="value">{row.tech_score:.1f}</span></div>
+            <div class="score-item"><span class="label">株価</span><span class="value">¥{row.close:,.0f}</span></div>
+            <div class="score-item"><span class="label">ROE</span><span class="value">{row.ROE:.1f}%</span></div>
+            <div class="score-item"><span class="label">PER</span><span class="value">{row.PER:.1f}x</span></div>
+            """
+            metrics_line = f"売上成長 {row.rev_growth:.1f}% ／ 利益成長 {row.profit_growth:.1f}%"
+
         cards_html += f"""
         <div class="card">
           <div class="card-header">
@@ -396,15 +435,10 @@ def _generate_html(top10: pd.DataFrame, ai: dict, stats: dict, mode: str = "grow
             {sepa2_html}{judg_html}
           </div>
           <div class="scores">
-            <div class="score-item"><span class="label">総合</span><span class="value total">{row.total_score:.1f}</span></div>
-            <div class="score-item"><span class="label">ファンダ</span><span class="value">{row.funda_score:.1f}</span></div>
-            <div class="score-item"><span class="label">テクニカル</span><span class="value">{row.tech_score:.1f}</span></div>
-            <div class="score-item"><span class="label">株価</span><span class="value">¥{row.close:,.0f}</span></div>
-            <div class="score-item"><span class="label">ROE</span><span class="value">{row.ROE:.1f}%</span></div>
-            <div class="score-item"><span class="label">PER</span><span class="value">{row.PER:.1f}x</span></div>
+{score_html}
           </div>
           <div class="metrics">
-            売上成長 {row.rev_growth:.1f}% ／ 利益成長 {row.profit_growth:.1f}%
+            {metrics_line}
           </div>
           {'<div class="story">' + story + '</div>' if story else ''}
           {'<div class="upside">上昇余地: ' + upside + '</div>' if upside else ''}
@@ -428,21 +462,55 @@ def _generate_html(top10: pd.DataFrame, ai: dict, stats: dict, mode: str = "grow
     ) if top3 else ""
 
     rows_html = ""
-    for i, r in enumerate(top10.itertuples()):
-        rows_html += (
+    if mode == "value":
+        # バリューモードは PBR/PSR を最前面に
+        table_header = (
             "<tr>"
-            "<td>" + str(i + 1) + "</td>"
-            "<td>" + str(r.company_name) + "</td>"
-            "<td>¥" + f"{r.close:,.0f}" + "</td>"
-            "<td>" + f"{r.rev_growth:.1f}" + "</td>"
-            "<td>" + f"{r.profit_growth:.1f}" + "</td>"
-            "<td>" + f"{r.ROE:.1f}" + "</td>"
-            "<td>" + f"{r.PER:.1f}" + "</td>"
-            "<td>" + f"{r.funda_score:.1f}" + "</td>"
-            "<td>" + f"{r.tech_score:.1f}" + "</td>"
-            "<td><b>" + f"{r.total_score:.1f}" + "</b></td>"
+            "<th>#</th><th>会社名</th><th>株価</th>"
+            "<th>PBR</th><th>PSR</th><th>PER</th><th>ROE%</th>"
+            "<th>売上成長%</th><th>ファンダ</th><th>テクニカル</th><th>総合</th>"
             "</tr>"
         )
+        for i, r in enumerate(top10.itertuples()):
+            psr_v = getattr(r, "psr", None)
+            psr_str = f"{psr_v:.2f}" if psr_v is not None and not (isinstance(psr_v, float) and np.isnan(psr_v)) else "-"
+            rows_html += (
+                "<tr>"
+                "<td>" + str(i + 1) + "</td>"
+                "<td>" + str(r.company_name) + "</td>"
+                "<td>¥" + f"{r.close:,.0f}" + "</td>"
+                "<td><b>" + f"{r.PBR:.2f}" + "</b></td>"
+                "<td><b>" + psr_str + "</b></td>"
+                "<td>" + f"{r.PER:.1f}" + "</td>"
+                "<td>" + f"{r.ROE:.1f}" + "</td>"
+                "<td>" + f"{r.rev_growth:.1f}" + "</td>"
+                "<td>" + f"{r.funda_score:.1f}" + "</td>"
+                "<td>" + f"{r.tech_score:.1f}" + "</td>"
+                "<td><b>" + f"{r.total_score:.1f}" + "</b></td>"
+                "</tr>"
+            )
+    else:
+        table_header = (
+            "<tr>"
+            "<th>#</th><th>会社名</th><th>株価</th><th>売上成長%</th><th>利益成長%</th>"
+            "<th>ROE%</th><th>PER</th><th>ファンダ</th><th>テクニカル</th><th>総合</th>"
+            "</tr>"
+        )
+        for i, r in enumerate(top10.itertuples()):
+            rows_html += (
+                "<tr>"
+                "<td>" + str(i + 1) + "</td>"
+                "<td>" + str(r.company_name) + "</td>"
+                "<td>¥" + f"{r.close:,.0f}" + "</td>"
+                "<td>" + f"{r.rev_growth:.1f}" + "</td>"
+                "<td>" + f"{r.profit_growth:.1f}" + "</td>"
+                "<td>" + f"{r.ROE:.1f}" + "</td>"
+                "<td>" + f"{r.PER:.1f}" + "</td>"
+                "<td>" + f"{r.funda_score:.1f}" + "</td>"
+                "<td>" + f"{r.tech_score:.1f}" + "</td>"
+                "<td><b>" + f"{r.total_score:.1f}" + "</b></td>"
+                "</tr>"
+            )
 
     return f"""<!DOCTYPE html>
 <html lang="ja">
@@ -516,10 +584,7 @@ def _generate_html(top10: pd.DataFrame, ai: dict, stats: dict, mode: str = "grow
   <div class="section-title">スコアランキング TOP{stats['top10']}</div>
   <div class="table-wrap">
     <table>
-      <tr>
-        <th>#</th><th>会社名</th><th>株価</th><th>売上成長%</th><th>利益成長%</th>
-        <th>ROE%</th><th>PER</th><th>ファンダ</th><th>テクニカル</th><th>総合</th>
-      </tr>
+      {table_header}
       {rows_html}
     </table>
   </div>
@@ -569,22 +634,26 @@ with st.sidebar:
         st.markdown("""
 - **ハードフィルタ（バリュー）**
   - PBR ≤ 1.5 / PER ≤ 25（かつ正値）
-  - ROE ≥ 8% / 自己資本比率 ≥ 40%
+  - 自己資本比率 ≥ 40% / 営業黒字
   - 時価総額 > 100億 / 売上成長 ≥ 3%
-  - シクリカル5業種除外（鉄鋼/海運業/その他製品/鉱業/ゴム製品）
-- **ファンダ** (60%)
-  - Value 50% / Quality 25% / Growth 25%
+  - **ROE 制約は撤廃**（IC=-0.027 で逆効果のため）
+- **ファンダ 100pt** (PBR-heavy)
+  - PBR 50pt / PSR 30pt / PER 10pt / op_margin 10pt
   - V字転換+15pt / 2期増益+10pt / 増配+10pt
-- **テクニカル** (40%)
+  - ROE/成長率は撤廃（Rank IC 診断で予測力なしと判明）
+- **テクニカル**
   - MA200乖離 30pt / RSI 20pt（30-50）
   - MACD 20pt / 需給 15pt / 高値ブレイク 15pt
+- **Top20 集中**（バリューモード）
+  - 診断: Top10〜20 が α 最大、Top50 以上は TOPIX に近づく
 - **BUYシグナル条件**
   - 総合≥60 / テクニカル≥55 / RSI 30-50
 - **利確目標**
   - 第1目標 +35% / 第2目標 +40%
   - 損切り -15%（or MA25の高い方）
-- **⚠️ ローテーションルール**
-  - 市場が強気転換時は成長株モードへ切替推奨
+- **⚠️ 期待値**
+  - backtest α +18% / 勝率 86% は**生存バイアス込み**で楽観値
+  - 実運用での realistic α は +10〜15%/年、勝率 70-75% を想定
 """)
     else:
         st.markdown("""
@@ -763,21 +832,35 @@ st.caption("このテキストをコピーして claude.ai のプロジェクト
 
 def _build_claude_text(top10: pd.DataFrame, ai: dict, market: dict, mode: str = "growth") -> str:
     mode_label  = "バリュー株" if mode == "value" else "成長株"
+    n_stocks    = len(top10)
     score_design = (
-        "ファンダ60%（Value50+Quality25+Growth25）＋テクニカル40%（MA/RSI30-55/MACD/出来高/高値ブレイク）"
+        "ファンダ60%（PBR50+PSR30+PER10+op_margin10、合計100pt） "
+        "＋テクニカル40%（MA200乖離30+RSI30-50で20+MACD20+需給15+高値ブレイク15）"
         if mode == "value" else
         "ファンダ60%（Growth50+Quality25+Value25）＋テクニカル40%（MA/RSI50-65/MACD/出来高/高値ブレイク）"
     )
+    strategy_note = (
+        "【戦略】 Rank IC 診断ベースの PBR-heavy Deep Value 戦略\n"
+        "  - ハードフィルタ: PBR≤1.5 / PER≤25 / 自己資本比率≥40% / 時価総額≥100億 / 売上成長≥3% / 営業黒字\n"
+        "  - **ROE 制約は撤廃**（IC=-0.027 で逆効果と判明、低ROE×低PBR の Deep Value が最大α源）\n"
+        "  - **シクリカル業種除外も撤廃**（過剰最適化と判明）\n"
+        "  - 月次37スナップショット backtest で Top20 α=+18%、勝率86%（生存バイアス込みの楽観値）\n"
+        "  - 実運用想定 α=+10〜15%/年、勝率 70-75%"
+        if mode == "value" else
+        "【戦略】 成長株モード（Growth>10% / ROE>15% / equity_ratio>30% / 営業黒字）"
+    )
     analyst_instruction = (
-        "バリュー投資の専門家として、割安の根拠・バリュートラップリスク・回復カタリストを分析してください。"
+        "バリュー投資の専門家として、PBR割安の根拠・バリュートラップリスク・回復カタリストを分析してください。\n"
+        "特に **東証 PBR 改善要請** の文脈で、自社株買い・増配・資本効率改善・MBO/M&A可能性などの企業アクションを重視してください。"
         if mode == "value" else
         "プロのファンドマネージャーとして投資分析をしてください。"
     )
     lines = [
-        f"以下はクオンツ＋テクニカルスクリーニングで抽出された{mode_label}TOP10銘柄です。",
+        f"以下はクオンツ＋テクニカルスクリーニングで抽出された{mode_label} TOP{n_stocks} 銘柄です。",
         analyst_instruction,
         "",
         f"【スクリーニング日時】{datetime.now().strftime('%Y-%m-%d')}",
+        strategy_note,
         f"【スコア設計】{score_design}",
     ]
 
@@ -800,27 +883,55 @@ def _build_claude_text(top10: pd.DataFrame, ai: dict, market: dict, mode: str = 
             f" / グロース250 ETF: {gr_close} (MA25:{gr_ma25}) {gr_dir}",
         ]
 
-    lines += [
-        "",
-        "| # | コード | 会社名 | セクター | 株価 | 売上成長% | 利益成長% | ROE% | PER | ファンダ | テクニカル | 総合 | シグナル | エントリー | 損切り | 利確 |",
-        "|---|--------|--------|--------|------|---------|---------|------|-----|--------|----------|------|---------|---------|------|------|",
-    ]
-    for i, r in enumerate(top10.itertuples(), 1):
-        sig    = getattr(r, "signal", "") or ""
-        eb     = getattr(r, "entry_breakout", None)
-        stop   = getattr(r, "stop_loss", None)
-        stopp  = getattr(r, "stop_pct", None)
-        tgt    = getattr(r, "target", None)
-        eb_str   = f"¥{eb:,.0f}"   if eb   and pd.notna(eb)   else "-"
-        stop_str = f"¥{stop:,.0f}({stopp:.1f}%)" if stop and pd.notna(stop) and stopp and pd.notna(stopp) else "-"
-        tgt_str  = f"¥{tgt:,.0f}"  if tgt  and pd.notna(tgt)  else "-"
-        lines.append(
-            f"| {i} | {r.code_4} | {r.company_name} | {r.sector} "
-            f"| ¥{r.close:,.0f} | {r.rev_growth:.1f} | {r.profit_growth:.1f} "
-            f"| {r.ROE:.1f} | {r.PER:.1f} "
-            f"| {r.funda_score:.1f} | {r.tech_score:.1f} | {r.total_score:.1f} "
-            f"| {sig} | {eb_str} | {stop_str} | {tgt_str} |"
-        )
+    # バリュー株モードは PBR/PSR を最優先表示。成長株モードは従来通り
+    if mode == "value":
+        psr_val = lambda r: getattr(r, "psr", None)
+        lines += [
+            "",
+            "| # | コード | 会社名 | セクター | 株価 | **PBR** | **PSR** | PER | ROE% | 売上成長% | 利益成長% | 時価総額(億) | ファンダ | テクニカル | 総合 | シグナル | エントリー | 損切り | 利確 |",
+            "|---|--------|--------|--------|------|---------|---------|-----|------|---------|---------|------------|--------|----------|------|---------|---------|------|------|",
+        ]
+        for i, r in enumerate(top10.itertuples(), 1):
+            sig    = getattr(r, "signal", "") or ""
+            eb     = getattr(r, "entry_breakout", None)
+            stop   = getattr(r, "stop_loss", None)
+            stopp  = getattr(r, "stop_pct", None)
+            tgt    = getattr(r, "target", None)
+            mcap_oku = getattr(r, "market_cap", 0) / 1e8 if getattr(r, "market_cap", None) else 0
+            psr      = psr_val(r)
+            psr_str  = f"{psr:.2f}" if psr is not None and not (isinstance(psr, float) and np.isnan(psr)) else "-"
+            eb_str   = f"¥{eb:,.0f}"   if eb   and pd.notna(eb)   else "-"
+            stop_str = f"¥{stop:,.0f}({stopp:.1f}%)" if stop and pd.notna(stop) and stopp and pd.notna(stopp) else "-"
+            tgt_str  = f"¥{tgt:,.0f}"  if tgt  and pd.notna(tgt)  else "-"
+            lines.append(
+                f"| {i} | {r.code_4} | {r.company_name} | {r.sector} "
+                f"| ¥{r.close:,.0f} | **{r.PBR:.2f}** | **{psr_str}** | {r.PER:.1f} "
+                f"| {r.ROE:.1f} | {r.rev_growth:.1f} | {r.profit_growth:.1f} | {mcap_oku:.0f} "
+                f"| {r.funda_score:.1f} | {r.tech_score:.1f} | {r.total_score:.1f} "
+                f"| {sig} | {eb_str} | {stop_str} | {tgt_str} |"
+            )
+    else:
+        lines += [
+            "",
+            "| # | コード | 会社名 | セクター | 株価 | 売上成長% | 利益成長% | ROE% | PER | ファンダ | テクニカル | 総合 | シグナル | エントリー | 損切り | 利確 |",
+            "|---|--------|--------|--------|------|---------|---------|------|-----|--------|----------|------|---------|---------|------|------|",
+        ]
+        for i, r in enumerate(top10.itertuples(), 1):
+            sig    = getattr(r, "signal", "") or ""
+            eb     = getattr(r, "entry_breakout", None)
+            stop   = getattr(r, "stop_loss", None)
+            stopp  = getattr(r, "stop_pct", None)
+            tgt    = getattr(r, "target", None)
+            eb_str   = f"¥{eb:,.0f}"   if eb   and pd.notna(eb)   else "-"
+            stop_str = f"¥{stop:,.0f}({stopp:.1f}%)" if stop and pd.notna(stop) and stopp and pd.notna(stopp) else "-"
+            tgt_str  = f"¥{tgt:,.0f}"  if tgt  and pd.notna(tgt)  else "-"
+            lines.append(
+                f"| {i} | {r.code_4} | {r.company_name} | {r.sector} "
+                f"| ¥{r.close:,.0f} | {r.rev_growth:.1f} | {r.profit_growth:.1f} "
+                f"| {r.ROE:.1f} | {r.PER:.1f} "
+                f"| {r.funda_score:.1f} | {r.tech_score:.1f} | {r.total_score:.1f} "
+                f"| {sig} | {eb_str} | {stop_str} | {tgt_str} |"
+            )
 
     lines += [
         "",
@@ -896,9 +1007,23 @@ def _build_claude_text(top10: pd.DataFrame, ai: dict, market: dict, mode: str = 
         lines += [
             "",
             "上記データをもとに：",
-            "① 各銘柄の割安の根拠・財務的強み・バリュートラップリスク・回復カタリストを分析してください",
-            "② 最も有望なバリュー株ベスト3を選んでその理由を教えてください（PBR改善余地・株主還元・業績回復を重視）",
-            "③ 今の市場環境（2026年4月）を踏まえたバリュー投資戦略コメントをお願いします",
+            "① 各銘柄の **PBR が低い理由**（構造的な割安 vs 業績悪化による割安）を分析",
+            "   - 業績悪化型なら → バリュートラップリスクと回復カタリスト",
+            "   - 構造的割安なら → 東証 PBR 要請への対応スタンス（中計・株主還元・MBO/M&A 噂）",
+            "② **東証 PBR 改善要請** への各社の対応を Web 検索で確認:",
+            "   - 「資本コストや株価を意識した経営」の開示有無",
+            "   - 自社株買い・増配・親子上場解消・政策保有株削減 などの具体策",
+            "   - アクティビスト・物言う株主の保有有無",
+            "③ **財務健全性チェック**: 自己資本比率は確認済（≥40%）。さらに:",
+            "   - 連続赤字でないか（営業黒字は確認済だが、純利益ベースで赤字なら要警戒）",
+            "   - 有利子負債 / EBITDA、CFO トレンド、減損リスク",
+            "④ **バリュートラップ判定**: 過去5年で PBR が上がった実績、自己資本利益率の推移、業界全体の構造問題",
+            "⑤ 最有望ベスト3を選定（PBR改善カタリスト > 業績回復期待 > セクター追い風 で評価）",
+            "⑥ 今の市場環境（2026年4月）を踏まえたバリュー投資戦略コメント",
+            "",
+            "**スコアリング哲学**: PBR/PSR/PER のみで採点。ROE や成長率は無視（実証で予測力なしと判明）。",
+            "**注意**: backtest 数値は生存バイアスで楽観値。実運用想定 α=+10〜15%、勝率 70-75%。",
+            "個別銘柄では-30%級の損も覚悟すべし。",
         ]
     else:
         lines += [

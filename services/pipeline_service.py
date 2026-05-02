@@ -44,29 +44,28 @@ HARD = {
 }
 
 # ── ハードフィルタ閾値（バリュー株モード） ──────────────────────────────
+# 【2026-04-29 改訂】月次37スナップショットの診断で ROE は IC=-0.027 と
+# 逆効果と判明したためハードフィルタから撤廃。
+# 撤廃前後の比較: PBR_only Top20 で α +5.46% → +18.14% （+12.68pt 改善）
+# 自己資本比率・営業黒字を維持して破綻リスクは管理。
 HARD_VALUE = {
     "pbr_max":           1.5,     # PBR ≤ 1.5
-    "per_max":           25.0,    # PER ≤ 25（かつ正値）← 日本の割安成長株を拾うため20→25
-    "roe_min":            8.0,    # ROE ≥ 8%
-    "equity_ratio_min":  40.0,    # 自己資本比率 ≥ 40%
-    "market_cap_min":   100e8,    # 時価総額 > 100億円
+    "per_max":           25.0,    # PER ≤ 25（かつ正値）
+    # roe_min: 撤廃（IC=-0.027 で逆効果。低ROE×低PBR の Deep Value が最大α源）
+    "equity_ratio_min":  40.0,    # 自己資本比率 ≥ 40%（倒産リスク管理の砦）
+    "market_cap_min":   100e8,    # 時価総額 > 100億円（流動性確保）
     "rev_growth_min":    3.0,     # 売上成長率 ≥ 3%（死に株排除）
 }
 
 # ── バリュー株モードで除外するシクリカル業種 ──────────────────────────
-# 業績がコモディティ価格に連動するため、業績ピーク時に「割安」に見えて
-# その後業績正常化で株価が下がる典型的なバリュートラップを排除する。
-# バックテスト（2024-04/2024-10/2025-04）で5業種除外が全項目改善を確認：
-#   - 全体平均 22.25% → 23.77% / 中央値 13.82% → 15.62%
-#   - 勝率 70.5% → 71.8% / トラップ率 5.4% → 3.4%（半減以下）
-#   - 2024-04の勝率 42% → 48%（最弱期間が改善）
-EXCLUDE_SECTORS_VALUE = [
-    "鉄鋼",
-    "海運業",
-    "その他製品",
-    "鉱業",
-    "ゴム製品",
-]
+# 【2026-04-29 削除】当初は3スナップショットのバックテストで「全項目改善」と
+# 見えたため5業種除外を導入したが、株式分割対応バグ修正後の再検証で逆効果と判明：
+#   - Top50 平均: 除外あり +20.13% vs 除外なし +21.71%（除外なしが優位）
+#   - Top50 ワースト: 除外あり -47% vs 除外なし -27%（除外がワーストを救えない）
+#   - 勝率・トラップ率は同等
+# よって過剰最適化と判断し、業種除外なし（空リスト）に戻した。
+# 必要に応じて業種ごとの「スコア減点」など、より柔軟な対応を検討。
+EXCLUDE_SECTORS_VALUE = []
 
 # ── ファンダ各指標の最大点数（成長株モード） ─────────────────────────────
 FUNDA_MAX = {
@@ -86,19 +85,23 @@ FUNDA_MAX = {
 VALUE_METRICS = {"per", "psr", "pbr"}   # 低いほど良い指標
 
 # ── ファンダ各指標の最大点数（バリュー株モード） ─────────────────────────
+# 【2026-04-29 改訂】月次37スナップショットの Rank IC 診断結果に基づく再設計
+#   - PBR        IC=+0.151（最強・37/37 月でプラス）
+#   - PSR        IC=+0.143（東証要請後にむしろ強化）
+#   - PER        IC=+0.082（PBR と冗長気味だが補完）
+#   - op_margin  使う（黒字確認程度）
+# 撤廃した指標（予測力なし or 逆効果）:
+#   - ROE           IC=-0.027（逆効果）
+#   - rev_growth    IC=-0.017（逆効果）
+#   - profit_growth IC=-0.017（逆効果）
+#   - eps_growth, equity_ratio  IC≈0（ノイズ）
 FUNDA_MAX_VALUE = {
-    # Value 50pt（割安指標を重視）
-    "pbr":           20,
-    "per":           20,
-    "psr":           10,
-    # Quality 25pt
-    "roe":           10,
-    "op_margin":     10,
-    "equity_ratio":   5,
-    # Growth 25pt（成長は補助的）
-    "rev_growth":    10,
-    "profit_growth": 10,
-    "eps_growth":     5,
+    # Value 90pt（純粋に割安度のみで採点）
+    "pbr": 50,   # 最強ファクター
+    "psr": 30,   # 補強
+    "per": 10,   # 補完
+    # Quality 10pt（黒字確認のみ）
+    "op_margin": 10,
 }
 VALUE_METRICS_VALUE = {"per", "psr", "pbr"}   # 低いほど良い指標（バリューモード）
 
@@ -259,16 +262,16 @@ def apply_hard_filter(
     df["market_cap"] = df["close"] * df["sh_out"].fillna(0)
 
     if mode == "value":
+        # ROE 制約撤廃（Deep Value を拾うため）。倒産リスクは equity_ratio + 営業黒字で管理
         mask = (
             (df["PBR"].fillna(999)         <= HARD_VALUE["pbr_max"])           &
             (df["PER"].fillna(999)         <= HARD_VALUE["per_max"])           &
             (df["PER"].fillna(0)           >  0)                               &
-            (df["ROE"].fillna(0)           >= HARD_VALUE["roe_min"])           &
             (df["equity_ratio"].fillna(0)  >= HARD_VALUE["equity_ratio_min"])  &
             (df["market_cap"]              >= HARD_VALUE["market_cap_min"])    &
             (df["rev_growth"].fillna(-999) >= HARD_VALUE["rev_growth_min"])    &  # 売上成長+3%（死に株排除）
             (df["op_positive"].fillna(False) == True)                          &
-            (~df["sector"].isin(EXCLUDE_SECTORS_VALUE))                          # シクリカル5業種除外
+            (~df["sector"].isin(EXCLUDE_SECTORS_VALUE))                          # 業種除外（現状空リスト）
         )
     else:
         mask = (
@@ -994,7 +997,10 @@ def run_pipeline(use_claude: bool = True, progress_callback=None, mode: str = "g
     _cb("地合いフィルター計算中...")
     market = calc_market_condition(prices_df)
 
-    top10 = scored.head(10).reset_index(drop=True)
+    # バリュー株モードは Top20 集中（診断: PBR_only Top20 で α +18.14% / 勝率 86%）
+    # 成長株モードは従来通り Top10
+    top_n = 20 if mode == "value" else 10
+    top10 = scored.head(top_n).reset_index(drop=True)   # 後方互換のためキー名は top10 維持
 
     ai_result = None
     if use_claude:
