@@ -303,23 +303,27 @@ if cache_df is not None and not cache_df.empty:
         df = df[df["ROE"] > 15]
 
     # 52週高値フィルター（prices.parquetから計算）
+    # 分割対応: 全期間で normalize_high して末尾日スケールに揃えてから 52週分を取り出す
     if near_52w_high and not df.empty and os.path.exists(PRICES_PATH):
+        from services.split_adjust import normalize_high
         prices_52w = pd.read_parquet(PRICES_PATH)
         prices_52w["Date"] = pd.to_datetime(prices_52w["Date"])
         cutoff_52w = pd.Timestamp.today() - pd.Timedelta(days=365)
         keep = []
         for _, row in df.iterrows():
             code5 = str(row.get("code", ""))
-            cp = prices_52w[
-                (prices_52w["Code"] == code5) &
-                (prices_52w["Date"] >= cutoff_52w)
-            ]
-            if cp.empty:
+            cp_full = prices_52w[prices_52w["Code"] == code5].sort_values("Date").reset_index(drop=True)
+            if cp_full.empty:
                 keep.append(False)
                 continue
-            high_52w = pd.to_numeric(cp["AdjH"], errors="coerce").max()
+            high_norm = normalize_high(cp_full, dropna=False)
+            mask = cp_full["Date"] >= cutoff_52w
+            high_52w = float(high_norm[mask].max()) if mask.any() else np.nan
             current  = float(row.get("close", 0))
-            keep.append(current >= high_52w * 0.9)
+            if pd.isna(high_52w) or high_52w <= 0:
+                keep.append(False)
+            else:
+                keep.append(current >= high_52w * 0.9)
         df = df[keep]
 
     # 上方修正フィルター（独立）

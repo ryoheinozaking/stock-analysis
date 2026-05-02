@@ -20,6 +20,10 @@ import anthropic
 import numpy as np
 import pandas as pd
 
+from services.split_adjust import (
+    normalize_close, normalize_volume, normalize_high, split_factor_between,
+)
+
 _ROOT             = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _STOCK_CACHE_PATH = os.path.join(_ROOT, "data", "stock_cache.parquet")
 _FINS_CACHE_PATH  = os.path.join(_ROOT, "data", "fins_cache.parquet")
@@ -128,7 +132,7 @@ def _build_fins_metrics(fins_fy: pd.DataFrame, prices_df: pd.DataFrame) -> pd.Da
     """
     fins_fy から銘柄ごとに最新FYと前FYを比較して
     eps_growth / op_margin / equity_ratio / market_cap_base を返す。
-    prices_df を使い、EPS開示後の株式分割に対応したsh_outを計算する。
+    prices_df を使い、株式分割を跨ぐ EPS 比較・sh_out を末尾日スケールに揃える。
     """
     # 事前にコード別グループ化（ループ内での全行検索を排除）
     prices_df = prices_df.copy()
@@ -142,6 +146,14 @@ def _build_fins_metrics(fins_fy: pd.DataFrame, prices_df: pd.DataFrame) -> pd.Da
         if len(grp) < 1:
             continue
         curr = grp.iloc[0]
+        cp   = prices_grouped.get(code)
+        last_date = cp["Date"].max() if cp is not None and not cp.empty else None
+
+        # 末尾日スケールに揃えるための分割係数（per-share 値に乗算）
+        # curr の disc_date より後ろの分割すべての累積積
+        disc_curr = pd.to_datetime(curr.get("DiscDate"), errors="coerce")
+        sf_curr = (split_factor_between(cp, disc_curr, last_date)
+                   if (cp is not None and pd.notna(disc_curr) and last_date is not None) else 1.0)
 
         eps_g     = np.nan
         op_margin = np.nan
@@ -150,8 +162,15 @@ def _build_fins_metrics(fins_fy: pd.DataFrame, prices_df: pd.DataFrame) -> pd.Da
             prev  = grp.iloc[1]
             eps_c = curr["EPS"]
             eps_p = prev["EPS"]
+            disc_prev = pd.to_datetime(prev.get("DiscDate"), errors="coerce")
+            sf_prev = (split_factor_between(cp, disc_prev, last_date)
+                       if (cp is not None and pd.notna(disc_prev) and last_date is not None) else 1.0)
+            # 両者を末尾日スケールに正規化してから比較
             if pd.notna(eps_c) and pd.notna(eps_p) and eps_p != 0:
-                eps_g = (eps_c - eps_p) / abs(eps_p) * 100
+                eps_c_n = eps_c * sf_curr
+                eps_p_n = eps_p * sf_prev
+                if eps_p_n != 0:
+                    eps_g = (eps_c_n - eps_p_n) / abs(eps_p_n) * 100
 
         sales = curr["Sales"]
         op    = curr["OP"]
@@ -161,28 +180,31 @@ def _build_fins_metrics(fins_fy: pd.DataFrame, prices_df: pd.DataFrame) -> pd.Da
         eq_ar    = curr["EqAR"]
         equity_r = eq_ar * 100 if pd.notna(eq_ar) else np.nan
 
-        # 株式分割対応: EPS開示日後のAdjFactor累積積でsh_outを調整
-        sh_out    = curr["ShOutFY"]
-        disc_date = pd.to_datetime(curr.get("DiscDate"), errors="coerce")
-        if pd.notna(disc_date) and pd.notna(sh_out):
-            cp = prices_grouped.get(code)
-            if cp is not None:
-                adj_after = cp.loc[cp["Date"] > disc_date, "AdjFactor"]
-                if len(adj_after) > 0:
-                    split_factor = float(adj_after.prod())
-                    if split_factor > 0:
-                        sh_out = sh_out / split_factor
+        # 株式分割対応: ShOutFY を末尾日スケールに揃える（分割で株数増加 → 値で割る）
+        sh_out = curr["ShOutFY"]
+        if pd.notna(sh_out) and sf_curr and sf_curr > 0:
+            sh_out = sh_out / sf_curr
 
         # 連続増配チェック（2期連続増配=2, 1期増配=1, なし=0）
+        # DivAnn は per-share 値なので分割を跨ぐ場合は末尾日スケールに正規化して比較
         div_trend = 0
         d_curr = pd.to_numeric(curr.get("DivAnn"), errors="coerce")
         if len(grp) >= 2 and pd.notna(d_curr) and d_curr > 0:
-            d_prev1 = pd.to_numeric(grp.iloc[1].get("DivAnn"), errors="coerce")
-            if pd.notna(d_prev1) and d_prev1 > 0 and d_curr > d_prev1:
+            d_prev1_raw = pd.to_numeric(grp.iloc[1].get("DivAnn"), errors="coerce")
+            disc_p1 = pd.to_datetime(grp.iloc[1].get("DiscDate"), errors="coerce")
+            sf_p1 = (split_factor_between(cp, disc_p1, last_date)
+                     if (cp is not None and pd.notna(disc_p1) and last_date is not None) else 1.0)
+            d_curr_n  = d_curr * sf_curr
+            d_prev1_n = d_prev1_raw * sf_p1 if pd.notna(d_prev1_raw) else np.nan
+            if pd.notna(d_prev1_n) and d_prev1_n > 0 and d_curr_n > d_prev1_n:
                 div_trend = 1
                 if len(grp) >= 3:
-                    d_prev2 = pd.to_numeric(grp.iloc[2].get("DivAnn"), errors="coerce")
-                    if pd.notna(d_prev2) and d_prev2 > 0 and d_prev1 > d_prev2:
+                    d_prev2_raw = pd.to_numeric(grp.iloc[2].get("DivAnn"), errors="coerce")
+                    disc_p2 = pd.to_datetime(grp.iloc[2].get("DiscDate"), errors="coerce")
+                    sf_p2 = (split_factor_between(cp, disc_p2, last_date)
+                             if (cp is not None and pd.notna(disc_p2) and last_date is not None) else 1.0)
+                    d_prev2_n = d_prev2_raw * sf_p2 if pd.notna(d_prev2_raw) else np.nan
+                    if pd.notna(d_prev2_n) and d_prev2_n > 0 and d_prev1_n > d_prev2_n:
                         div_trend = 2  # 2期連続増配
 
         # 営業利益トレンド（2期連続増=2, 1期増=1, 横ばい/減=0）
@@ -372,14 +394,10 @@ def _tech_score_single(cp: pd.DataFrame, mode: str = "growth") -> dict:
     """1銘柄分のテクニカルスコアを計算。mode='growth' or 'value'"""
     cp = cp.sort_values("Date").reset_index(drop=True)
 
-    # 株式分割対応: AdjFactorで過去価格を現在スケールに正規化
-    raw_close  = pd.to_numeric(cp["AdjC"],      errors="coerce")
-    adj_factor = pd.to_numeric(cp["AdjFactor"], errors="coerce").fillna(1.0)
-    rev_cumprod = adj_factor.iloc[::-1].cumprod().iloc[::-1]
-    cum_factor  = rev_cumprod.shift(-1).fillna(1.0)
-    close = (raw_close * cum_factor).dropna()
-
-    vol = pd.to_numeric(cp["AdjVo"], errors="coerce").fillna(0)
+    # 株式分割対応: 生の C を AdjFactor の累積積で末尾スケールに正規化
+    # （AdjC は J-Quants 取得タイミングに依存して混在状態になりうるため使わない）
+    close = normalize_close(cp)
+    vol   = normalize_volume(cp)
 
     if len(close) < 26:
         return {"tech_score": np.nan, "tech_detail": {}}
@@ -406,9 +424,13 @@ def _tech_score_single(cp: pd.DataFrame, mode: str = "growth") -> dict:
     # 出来高 25日平均
     vol_avg25 = float(vol.rolling(25).mean().iloc[-1]) if len(vol) >= 25 else float(vol.mean())
 
-    # 高値ブレイク
-    high20 = float(pd.to_numeric(cp["AdjH"], errors="coerce").tail(20).max()) if "AdjH" in cp else np.nan
-    high60 = float(pd.to_numeric(cp["AdjH"], errors="coerce").tail(60).max()) if "AdjH" in cp else np.nan
+    # 高値ブレイク（分割対応: 生 H × cum_factor で末尾日スケールに統一）
+    if "H" in cp.columns:
+        high_series = normalize_high(cp, dropna=True)
+        high20 = float(high_series.tail(20).max()) if len(high_series) >= 1 else np.nan
+        high60 = float(high_series.tail(60).max()) if len(high_series) >= 1 else np.nan
+    else:
+        high20 = high60 = np.nan
 
     score = 0
 
@@ -703,16 +725,12 @@ def calc_market_condition(prices_df: pd.DataFrame) -> dict:
         cp = prices_df[prices_df["Code"] == code].copy()
         cp = cp.sort_values("Date").reset_index(drop=True)
 
-        # 株式分割対応: AdjFactorで過去価格を現在スケールに正規化
-        # AdjFactor[i] の後方累積積を shift(-1) して各行に乗算
-        raw_close  = pd.to_numeric(cp["C"],         errors="coerce")
-        adj_factor = pd.to_numeric(cp["AdjFactor"], errors="coerce").fillna(1.0)
-        rev_cumprod = adj_factor.iloc[::-1].cumprod().iloc[::-1]
-        cum_factor  = rev_cumprod.shift(-1).fillna(1.0)
-        close_s = (raw_close * cum_factor).dropna()
+        if cp.empty:
+            result[key] = {"close": None, "ma25": None, "above": None}
+            continue
 
-        if close_s.empty:
-            close_s = pd.to_numeric(cp["AdjC"], errors="coerce").dropna()
+        # 株式分割対応: 生の C を AdjFactor の累積積で末尾スケールに正規化
+        close_s = normalize_close(cp)
 
         if len(close_s) < 25:
             result[key] = {"close": None, "ma25": None, "above": None}

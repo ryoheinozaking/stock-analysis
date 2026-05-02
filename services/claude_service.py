@@ -152,7 +152,16 @@ def fetch_fallback_metrics(code_4: str) -> dict:
         if ohlcv.empty or len(ohlcv) < 20:
             return {}
 
-        close  = ohlcv["AdjC"]
+        # 分割対応: 生 C × cum_factor で末尾日スケールに正規化
+        # （fresh API call なので AdjC で十分整合的だが、念のため normalize で統一）
+        from services.split_adjust import normalize_close as _norm_close, split_factor_between
+        ohlcv_sorted = ohlcv.sort_values("Date").reset_index(drop=True) if "Date" in ohlcv.columns else ohlcv.reset_index(drop=True)
+        if "C" in ohlcv_sorted.columns and "AdjFactor" in ohlcv_sorted.columns:
+            close  = _norm_close(ohlcv_sorted, dropna=True)
+        else:
+            close  = pd.to_numeric(ohlcv_sorted["AdjC"], errors="coerce").dropna()
+        if len(close) < 20:
+            return {}
         latest = float(close.iloc[-1])
         rsi    = calc_rsi(close)
         ma25   = calc_moving_average(close, 25)
@@ -171,11 +180,20 @@ def fetch_fallback_metrics(code_4: str) -> dict:
             if np.isnan(div):
                 div = pd.to_numeric(row.get("DivAnn"), errors="coerce")
 
-            per = latest / eps if not np.isnan(eps) and eps > 0 else np.nan
-            bps = eq / sh_out  if not np.isnan(eq) and not np.isnan(sh_out) and sh_out > 0 else np.nan
+            # 分割対応: per-share 値（EPS, DivAnn, ShOutFY）を disc_date → 末尾日スケールへ
+            disc_date = pd.to_datetime(row.get("DiscDate"), errors="coerce")
+            last_dt = pd.to_datetime(ohlcv_sorted["Date"].iloc[-1], errors="coerce") if "Date" in ohlcv_sorted else None
+            sf = (split_factor_between(ohlcv_sorted, disc_date, last_dt)
+                  if pd.notna(disc_date) and last_dt is not None else 1.0)
+            eps_n = eps * sf if not np.isnan(eps) else np.nan
+            div_n = div * sf if not np.isnan(div) else np.nan
+            sh_out_n = sh_out / sf if (not np.isnan(sh_out) and sf > 0) else sh_out
+
+            per = latest / eps_n if not np.isnan(eps_n) and eps_n > 0 else np.nan
+            bps = eq / sh_out_n if not np.isnan(eq) and not np.isnan(sh_out_n) and sh_out_n > 0 else np.nan
             pbr = latest / bps if not np.isnan(bps) and bps > 0 else np.nan
             roe = np_val / eq * 100 if not np.isnan(np_val) and not np.isnan(eq) and eq > 0 else np.nan
-            div_yield = div / latest * 100 if not np.isnan(div) and latest > 0 else np.nan
+            div_yield = div_n / latest * 100 if not np.isnan(div_n) and latest > 0 else np.nan
 
             if len(fin_df) >= 2:
                 prev  = fin_df.iloc[1]

@@ -20,6 +20,8 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from services.split_adjust import normalize_close
+
 # ── 設定 ─────────────────────────────────────────────────────────────────
 COST_PCT     = 0.002   # 往復取引コスト 0.2%
 STOP_LIST    = [0.15]         # 損切りシナリオ（-15%が最優秀と判明済み）
@@ -37,13 +39,10 @@ ETF_GROWTH   = "25160"
 
 
 def _calc_adj_close(cp: pd.DataFrame) -> pd.Series:
-    """AdjFactorで株式分割を正規化した終値を返す。"""
+    """株式分割を正規化した終値（末尾日スケール）を返す。
+    生 C を AdjFactor 累積積で正規化（AdjC 直接利用は混在状態のため不可）。"""
     cp = cp.sort_values("Date").reset_index(drop=True)
-    raw_close  = pd.to_numeric(cp["AdjC"],      errors="coerce")
-    adj_factor = pd.to_numeric(cp["AdjFactor"], errors="coerce").fillna(1.0)
-    rev_cum    = adj_factor.iloc[::-1].cumprod().iloc[::-1]
-    cum_factor = rev_cum.shift(-1).fillna(1.0)
-    return (raw_close * cum_factor).values
+    return normalize_close(cp, dropna=False).values
 
 
 def _calc_rsi(close: np.ndarray, period: int = 14) -> np.ndarray:

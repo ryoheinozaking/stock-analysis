@@ -269,7 +269,26 @@ score += max(0, 10 - abs(rsi - 50) / 5)  # RSI: 50に近いほど高得点
 
 ### equities/bars/daily 主要カラム
 `Date, Code, O, H, L, C, Vo, Va, AdjFactor, AdjO, AdjH, AdjL, AdjC, AdjVo`
-- 権利修正済み: `AdjO/H/L/C/Vo` を使用
+
+#### ⚠️ 株式分割対応の重要な注意
+
+**`AdjC`/`AdjVo` をそのまま使ってはいけない**。理由:
+- J-Quants の `AdjC` は **API を叩いた時点でのスナップショット値**
+- 当アプリは日次インクリメンタル取得のため、`prices.parquet` には「分割発生前に取得された未調整 AdjC」と「分割発生後に取得された調整済み AdjC」が混在する
+- 結果、長期 MA・RSI 等を `AdjC` ベースで計算すると**スケール混在で破綻する**
+
+**正しい方針**: `services/split_adjust.py` の helpers を使う。
+- `normalize_close(cp)`: 生 `C` × cum_factor で末尾日スケールに統一した close 系列
+- `normalize_volume(cp)`: 同じく出来高（株数で逆方向に分割反応）
+- `split_factor_between(cp, from_date, to_date)`: 区間内の AdjFactor 累積積。
+  per-share 値（EPS/BPS/DPS）の異時点比較・スケール変換に使う
+
+**per-share 値と price を組み合わせる箇所すべてで、両者のスケールを揃えること**。
+- PER = close / EPS → EPS を close と同じ日付スケールに変換する必要あり
+- eps_growth = (cur - prev) / prev → 双方を共通スケールに正規化してから比較
+- ShOutFY → 末尾日スケールに割り戻し（× shares で逆方向）
+
+CLAUDE.md/コードに散らばっていた「権利修正済: AdjO/H/L/C/Vo を使用」の記述は **単発スナップショット利用時のみ妥当**。長期蓄積データには当てはまらない。
 
 ### fins/summary 主要カラム
 - 実績: `Sales, OP, NP, EPS, BPS, Eq, TA, CFO`（単位: **百万円**。EPS/BPS は円/株）

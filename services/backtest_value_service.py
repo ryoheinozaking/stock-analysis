@@ -23,6 +23,7 @@ from services.pipeline_service import (
     _build_fins_metrics, apply_hard_filter,
     calc_funda_score, calc_tech_scores, calc_total_score,
 )
+from services.split_adjust import split_factor_between
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -47,13 +48,26 @@ def _build_atdate_snapshot(
 
     Returns: code, code_4, company_name, sector, market, close,
              PER, PBR, ROE, rev_growth, profit_growth, op_positive
+
+    【スケール統一方針】
+    PER/PBR は close と per-share 値（EPS/BPS）が同一スケールでないと意味を持たない。
+    - close: 生の C を使用（その日のスケール = as_of 時点の真の取引価格）
+    - EPS/BPS: 開示時点(disc_date)のスケールから as_of 時点のスケールに変換
+      （disc_date と as_of の間に分割があれば split_factor を乗算）
     """
-    # 直近終値（各銘柄ごとに as_of 以前で最新の AdjC）
+    # 直近終値（各銘柄ごとに as_of 以前で最新の C）
+    # AdjC は J-Quants 取得タイミング次第でスケール混在のため使わない
     p = prices_past.sort_values(["Code", "Date"])
     latest_price = (p.groupby("Code")
-                     .tail(1)[["Code", "AdjC"]]
-                     .rename(columns={"Code": "code", "AdjC": "close"}))
+                     .tail(1)[["Code", "C"]]
+                     .rename(columns={"Code": "code", "C": "close"}))
     latest_price["close"] = pd.to_numeric(latest_price["close"], errors="coerce")
+
+    # コード別グループ化（split_factor_between 計算用）
+    p_indexed = p.copy()
+    p_indexed["Date"]      = pd.to_datetime(p_indexed["Date"], errors="coerce")
+    p_indexed["AdjFactor"] = pd.to_numeric(p_indexed["AdjFactor"], errors="coerce").fillna(1.0)
+    prices_grouped = {code: grp for code, grp in p_indexed.groupby("Code")}
 
     # 各銘柄の最新FY+前FY決算
     rows = []
@@ -70,6 +84,15 @@ def _build_atdate_snapshot(
         op_c    = pd.to_numeric(curr.get("OP"),    errors="coerce")
         sales_c = pd.to_numeric(curr.get("Sales"), errors="coerce")
 
+        # 分割係数: disc_curr 〜 as_of の間に発生した分割の累積積
+        # per-share 値（EPS/BPS）は disc_curr スケールから as_of スケールへ × sf
+        cp = prices_grouped.get(code)
+        disc_curr = pd.to_datetime(curr.get("DiscDate"), errors="coerce")
+        sf_curr = (split_factor_between(cp, disc_curr, as_of)
+                   if (cp is not None and pd.notna(disc_curr)) else 1.0)
+        eps_n = eps * sf_curr if pd.notna(eps) else np.nan
+        bps_n = bps * sf_curr if pd.notna(bps) else np.nan
+
         roe = (np_c / eq * 100) if (pd.notna(np_c) and pd.notna(eq) and eq > 0) else np.nan
         op_positive = bool(pd.notna(op_c) and op_c > 0)
 
@@ -78,6 +101,7 @@ def _build_atdate_snapshot(
             prev    = grp.iloc[1]
             sales_p = pd.to_numeric(prev.get("Sales"), errors="coerce")
             np_p    = pd.to_numeric(prev.get("NP"),    errors="coerce")
+            # Sales/NP は会社全体の値（per-share でない）→ 分割の影響を受けない
             if pd.notna(sales_c) and pd.notna(sales_p) and sales_p > 0:
                 rev_g = (sales_c - sales_p) / abs(sales_p) * 100
             if pd.notna(np_c) and pd.notna(np_p) and np_p != 0:
@@ -85,8 +109,8 @@ def _build_atdate_snapshot(
 
         rows.append({
             "code":          code,
-            "EPS_curr":      eps,
-            "BPS_curr":      bps,
+            "EPS_curr":      eps_n,
+            "BPS_curr":      bps_n,
             "ROE":           roe,
             "rev_growth":    rev_g,
             "profit_growth": profit_g,
@@ -208,10 +232,37 @@ def run_snapshot_backtest(
         _cb(f"[{as_of_date}] 追加除外ルール適用: {before} → {len(scored)} 銘柄")
 
     _cb(f"[{as_of_date}] フォワードリターン計算中...")
+    # 分割対応: フォワードリターンは「as_of スケール」で close と price_fwd を統一する
+    # スナップショットの close は C[as_of]（as_of-day スケール）。
+    # price_fwd は C[fwd_date] × split_factor(fwd_date → as_of) で as_of スケールに戻す。
+    # ※ split_factor は as_of < d <= fwd_date 区間の AdjFactor 累積積。
+    #    price_fwd を as_of スケールで見るには その係数を掛ける（per-share 値と同じ）。
     p_fwd = p[p["Date"] <= fwd_target].sort_values(["Code", "Date"])
-    fwd_price = (p_fwd.groupby("Code").tail(1)[["Code", "Date", "AdjC"]]
-                 .rename(columns={"Code": "code", "AdjC": "price_fwd", "Date": "fwd_date"}))
-    fwd_price["price_fwd"] = pd.to_numeric(fwd_price["price_fwd"], errors="coerce")
+
+    fwd_rows = []
+    for code, grp in p_fwd.groupby("Code"):
+        grp = grp.sort_values("Date").reset_index(drop=True)
+        if grp.empty:
+            continue
+        last_row = grp.iloc[-1]
+        fwd_date  = last_row["Date"]
+        fwd_C_raw = pd.to_numeric(last_row["C"], errors="coerce")
+        # as_of < d <= fwd_date 区間の累積分割係数
+        af = pd.to_numeric(grp["AdjFactor"], errors="coerce").fillna(1.0)
+        af_in_window = af[(grp["Date"] > as_of) & (grp["Date"] <= fwd_date)]
+        sf = float(af_in_window.prod()) if len(af_in_window) > 0 else 1.0
+        # as_of スケールに戻した forward 価格
+        # 分割で価格は 1/N に下がる → as_of スケールで比較するには ÷sf （= ×1/sf）
+        if pd.notna(fwd_C_raw) and sf > 0:
+            price_fwd_in_as_of_scale = fwd_C_raw / sf
+        else:
+            price_fwd_in_as_of_scale = np.nan
+        fwd_rows.append({
+            "code":      code,
+            "fwd_date":  fwd_date,
+            "price_fwd": price_fwd_in_as_of_scale,
+        })
+    fwd_price = pd.DataFrame(fwd_rows)
 
     scored = scored.merge(fwd_price, on="code", how="left")
     scored["return_pct"] = (scored["price_fwd"] / scored["close"] - 1) * 100

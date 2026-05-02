@@ -17,6 +17,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 
 from screener import calc_rsi, calc_moving_average, calc_avg_volume, calc_signal_score
+from services.split_adjust import normalize_close, normalize_volume
 
 _ROOT       = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE_PATH  = os.path.join(_ROOT, "data", "stock_cache.parquet")
@@ -364,8 +365,9 @@ def _calc_momentum_signals(cp, fins_df, code, topix_close=None, lookback=20, vol
         if len(cp) < 60:
             return _empty_mom()
 
-        close  = pd.to_numeric(cp["AdjC"],  errors="coerce")
-        volume = pd.to_numeric(cp["AdjVo"], errors="coerce").fillna(0)
+        # 分割対応: 生の C/Vo を末尾日スケールに正規化（cp とインデックス整合）
+        close  = normalize_close(cp, dropna=False)
+        volume = normalize_volume(cp, fillna=True)
 
         ma5        = close.rolling(5,   min_periods=1).mean()
         ma25       = close.rolling(25,  min_periods=1).mean()
@@ -450,9 +452,10 @@ def _compute_metrics(code, prices_df, fins_df, info_row):
         if len(cp) < 20:
             return None
 
-        cp    = cp.sort_values("Date")
-        close  = pd.to_numeric(cp["AdjC"],  errors="coerce").dropna()
-        volume = pd.to_numeric(cp["AdjVo"], errors="coerce").fillna(0)
+        cp = cp.sort_values("Date").reset_index(drop=True)
+        # 分割対応: 生の C/Vo を末尾日スケールに正規化
+        close  = normalize_close(cp, dropna=True)
+        volume = normalize_volume(cp, fillna=True)
 
         if len(close) < 20:
             return None
@@ -649,14 +652,14 @@ def build_stock_cache(market_codes=None):
     codes    = listed_df["Code"].dropna().unique().tolist()
     info_map = {row["Code"]: row.to_dict() for _, row in listed_df.iterrows()}
 
-    # TOPIX価格系列（RS計算用）: コード "13010" または "1306"（ETF代用）
+    # TOPIX価格系列（RS計算用）: コード "13060" または "13010"（ETF代用）
+    # 分割対応: TOPIX ETF も分割発生（13060 は 2026-03-30 1:10 分割）→ normalize_close 必須
     topix_close = None
     for topix_code in ["13060", "13010"]:
         tpx = prices_df[prices_df["Code"] == topix_code]
         if not tpx.empty:
-            topix_close = pd.to_numeric(
-                tpx.sort_values("Date")["AdjC"], errors="coerce"
-            ).reset_index(drop=True)
+            tpx_sorted = tpx.sort_values("Date").reset_index(drop=True)
+            topix_close = normalize_close(tpx_sorted, dropna=False)
             break
 
     # info_map にTOPIX系列を埋め込む（_compute_metrics経由で_calc_sepaに渡す）

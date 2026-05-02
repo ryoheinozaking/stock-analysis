@@ -6,6 +6,10 @@ import numpy as np
 from datetime import datetime
 from typing import Optional
 
+from services.split_adjust import (
+    normalize_close, normalize_volume, normalize_high, normalize_low, cum_factor,
+)
+
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TRADE_LOG_PATH = os.path.join(_ROOT, "data", "trade_log.csv")
 PRICES_PATH    = os.path.join(_ROOT, "data", "prices.parquet")
@@ -83,17 +87,23 @@ def _get_price_metrics(ticker: str, date_entry: str):
     try:
         prices = pd.read_parquet(PRICES_PATH)
         code5  = ticker + "0"
-        df = prices[prices["Code"] == code5].copy()
-        if df.empty:
+        cp_full = prices[prices["Code"] == code5].copy()
+        if cp_full.empty:
             return None, None
-        df = df.sort_values("Date")
+        cp_full["Date"] = pd.to_datetime(cp_full["Date"], errors="coerce")
+        cp_full = cp_full.sort_values("Date").reset_index(drop=True)
+        # 分割対応: 全期間で正規化してから entry 日までの30日に切り出す
+        close_norm = normalize_close(cp_full, dropna=False)
+        vol_norm   = normalize_volume(cp_full, fillna=True)
+
         cutoff = pd.Timestamp(date_entry)
-        df = df[df["Date"] <= cutoff].tail(30)
-        if len(df) < 20:
+        mask   = cp_full["Date"] <= cutoff
+        closes = close_norm[mask].dropna().tail(30).values
+        vols   = vol_norm[mask].tail(30).values
+        if len(closes) < 20:
             return None, None
 
-        # RSI（14日）
-        closes = df["AdjC"].values
+        # RSI（14日）— スケール正規化済の close で計算
         deltas = np.diff(closes)
         gains  = np.where(deltas > 0, deltas, 0.0)
         losses = np.where(deltas < 0, -deltas, 0.0)
@@ -101,10 +111,9 @@ def _get_price_metrics(ticker: str, date_entry: str):
         avg_loss = losses[-14:].mean() if len(losses) >= 14 else losses.mean()
         rsi = 100 - (100 / (1 + avg_gain / avg_loss)) if avg_loss > 0 else 100.0
 
-        # 出来高比率（当日 / 20日平均）
-        vols = df["AdjVo"].values
-        latest_vol = vols[-1]
-        avg_vol    = vols[-20:].mean() if len(vols) >= 20 else vols.mean()
+        # 出来高比率（当日 / 20日平均）— 株数ベースに正規化済
+        latest_vol = vols[-1] if len(vols) >= 1 else 0
+        avg_vol    = vols[-20:].mean() if len(vols) >= 20 else vols.mean() if len(vols) > 0 else 0
         vol_ratio  = round(latest_vol / avg_vol, 2) if avg_vol > 0 else None
 
         return round(rsi, 1), vol_ratio
@@ -157,18 +166,37 @@ def _calc_exit_metrics(
         raise ValueError(f"date_exit ({date_exit}) は date_entry ({date_entry}) より前です")
 
     # MFE/MAE: prices.parquet から保有期間の高値・安値を取得
+    # 分割対応: 保有期間中に分割があり得るので、entry/exit/H/L すべてを
+    # 「entry-day スケール」に揃えてから比較する。
     max_profit_pct = pnl_pct  # fallback
     max_loss_pct   = pnl_pct  # fallback
     try:
         prices = pd.read_parquet(PRICES_PATH)
         code5  = ticker + "0"
-        df = prices[prices["Code"] == code5].copy()
-        df = df[(df["Date"] >= pd.Timestamp(date_entry)) & (df["Date"] <= pd.Timestamp(date_exit))]
-        if not df.empty:
-            max_high = df["AdjH"].max()
-            min_low  = df["AdjL"].min()
-            max_profit_pct = (max_high - entry_price) / entry_price * 100
-            max_loss_pct   = (min_low  - entry_price) / entry_price * 100
+        cp_full = prices[prices["Code"] == code5].copy()
+        cp_full["Date"] = pd.to_datetime(cp_full["Date"], errors="coerce")
+        cp_full = cp_full.sort_values("Date").reset_index(drop=True)
+        if not cp_full.empty:
+            # 末尾日スケールで正規化した H/L
+            high_norm = normalize_high(cp_full, dropna=False)
+            low_norm  = normalize_low(cp_full,  dropna=False)
+            cum = cum_factor(cp_full)
+            # entry_price は "entry 日のスケール" → 末尾日スケールへ変換
+            ts_e = pd.Timestamp(date_entry)
+            # entry 日に最も近い行（同日 or 直前）の cum_factor を取得
+            idx_e_arr = cp_full.index[cp_full["Date"] <= ts_e]
+            if len(idx_e_arr) > 0:
+                idx_e = idx_e_arr[-1]
+                cum_e = float(cum.iloc[idx_e])
+                entry_price_norm = entry_price * cum_e
+                # 保有期間内の H/L（末尾日スケール）
+                ts_x = pd.Timestamp(date_exit)
+                hold_mask = (cp_full["Date"] >= ts_e) & (cp_full["Date"] <= ts_x)
+                if hold_mask.any() and entry_price_norm > 0:
+                    max_high = float(high_norm[hold_mask].max())
+                    min_low  = float(low_norm[hold_mask].min())
+                    max_profit_pct = (max_high - entry_price_norm) / entry_price_norm * 100
+                    max_loss_pct   = (min_low  - entry_price_norm) / entry_price_norm * 100
     except Exception:
         pass
 
