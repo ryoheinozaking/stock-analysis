@@ -120,7 +120,7 @@ Claude の再評価で、ユーザの実弾履歴（損失は全て夢・テー�
 
 #### 3-B. 新規 concept ページ 3つを `wiki/concepts/` に作成
 
-各々 frontmatter（type: concept, tags, created: 2026-06-06）+ 本文 + 関連 wikilinks。
+各々 frontmatter + 本文 + 関連 wikilinks。**frontmatter は既存 concept ページ（例: `wiki/concepts/モメンタムトラップ.md`）のスキーマに準拠する**（実装時に既存ページを Read してフィールド構成を踏襲）。
 
 | ファイル | 骨子 | 関連リンク |
 |---|---|---|
