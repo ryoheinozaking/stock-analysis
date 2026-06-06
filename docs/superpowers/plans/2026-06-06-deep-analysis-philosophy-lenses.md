@@ -616,3 +616,13 @@ git -C C:\Users\ryohei\stock_analysis commit -m "docs: deep-analysis-jp 投資�
 **2. Placeholder scan:** TBD/TODO/「後で」なし。concept ページは全文を Write ステップに転記済み。
 
 **3. Type/naming consistency:** concept ページ名・wikilink 表記は spec・既存 vault と一致（`[[破壊的イノベーション（クリステンセン）]]` 等の全角括弧含め統一）。frontmatter は `モメンタムトラップ.md` のスキーマ（type/title/created/updated/status/domain/tags/aliases）に準拠。
+
+---
+
+## 実行時の追加（2026-06-06、ユーザ承認 = 案A）
+
+Task 12 のリンク解決検証で `[[deep-analysis-jp]]` が dead link（既存 vault 10 件 + 新規3ページ 3 件）と判明。vault の `wiki/meta/lint-report-2026-05-30.md` が既に P3 として指摘済みだった。ユーザ承認のもと**案A を実行**:
+
+- 新規作成: `wiki/concepts/deep-analysis-jp スキル.md`（`aliases: [deep-analysis-jp, 深層分析スキル, Deep Analysis JP]`）
+- 効果: `[[deep-analysis-jp]]` が alias 経由で resolve → 既存10件 + 今回3件 = 計13件の dead link を一括解消
+- スキルの中核+補助レンズ・実行フロー・3系統トラップを要約し、関連 concept へクロスリンク
