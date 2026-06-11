@@ -24,6 +24,7 @@ import pandas as pd
 
 from services.backtest_value_service import _build_atdate_snapshot
 from services.pipeline_service import (
+    _FINS_CACHE_PATH,
     _build_fins_metrics,
     _load_fins_fy,
     _load_prices,
@@ -44,9 +45,42 @@ FACTORS_FUNDA = [
     "rev_growth", "profit_growth", "eps_growth",
     "ROE", "op_margin", "equity_ratio",
     "PER", "PBR", "psr",
+    "rev_yoy_q", "op_yoy_q",   # 直近四半期 YoY（Phase 2-C 仮説検証用）
 ]
 FACTORS_SCORE = ["funda_score", "tech_score", "total_score", "growth_funda_v2"]
 FACTORS_ALL   = FACTORS_FUNDA + FACTORS_SCORE
+
+
+def _build_recent_yoy(fins_q_past: pd.DataFrame) -> pd.DataFrame:
+    """as_of 時点で開示済みの最新四半期(非FY)の YoY(売上/営業益)を計算。
+    四半期 Sales/OP は YTD 累計のため、同 CurPerType の前年同四半期と比較する。
+    Returns DataFrame[code, rev_yoy_q, op_yoy_q]."""
+    q = fins_q_past[fins_q_past["CurPerType"].isin(["1Q", "2Q", "3Q"])].copy()
+    if q.empty:
+        return pd.DataFrame(columns=["code", "rev_yoy_q", "op_yoy_q"])
+    q["Sales"]    = pd.to_numeric(q["Sales"], errors="coerce")
+    q["OP"]       = pd.to_numeric(q["OP"], errors="coerce")
+    q["DiscDate"] = pd.to_datetime(q["DiscDate"], errors="coerce")
+
+    def _yoy(c, p):
+        return (c - p) / abs(p) * 100 if pd.notna(c) and pd.notna(p) and p != 0 else np.nan
+
+    rows = []
+    for code, grp in q.groupby("Code"):
+        grp = grp.sort_values("DiscDate").drop_duplicates("DiscDate", keep="last")
+        latest = grp.iloc[-1]
+        same   = grp[grp["CurPerType"] == latest["CurPerType"]]
+        # 同 CurPerType で 300 日以上前の最新 = 前年同四半期（訂正再開示の重複を回避）
+        prior  = same[same["DiscDate"] <= latest["DiscDate"] - pd.Timedelta(days=300)]
+        if prior.empty:
+            continue
+        prev = prior.iloc[-1]
+        rows.append({
+            "code":      code,
+            "rev_yoy_q": _yoy(latest["Sales"], prev["Sales"]),
+            "op_yoy_q":  _yoy(latest["OP"],    prev["OP"]),
+        })
+    return pd.DataFrame(rows)
 
 BENCHMARK_CODE = "13060"   # TOPIX連動ETF (1306)
 
@@ -140,6 +174,7 @@ def run_growth_snapshot(
     top_n:        int = 20,
     forward_days: int = 60,
     progress_cb:  Optional[Callable] = None,
+    fins_all:     Optional[pd.DataFrame] = None,
 ) -> Dict:
     """
     as_of_date 時点の成長株パイプラインを再現し、
@@ -196,6 +231,13 @@ def run_growth_snapshot(
     scored["sepa_stage"] = _stages
     scored = calc_tech_scores(scored, prices_past, mode="growth")
     scored = calc_total_score(scored)
+
+    # 直近四半期 YoY(売上/営業益) を付与（Rank IC 計測用・Phase 2-C 仮説検証）
+    if fins_all is not None:
+        _fa = fins_all.copy()
+        _fa["DiscDate"] = pd.to_datetime(_fa["DiscDate"], errors="coerce")
+        yoy = _build_recent_yoy(_fa[_fa["DiscDate"] <= as_of])
+        scored = scored.merge(yoy, on="code", how="left")
 
     # forward リターン（フィルタ通過銘柄のみ計算）
     _cb(f"[{as_of_date}] forward リターン計算中...")
@@ -719,6 +761,7 @@ def run_diagnosis(
     _cb("データ読み込み中...")
     prices_df  = _load_prices()
     fins_fy    = _load_fins_fy()
+    fins_all   = pd.read_parquet(_FINS_CACHE_PATH)
     stock_meta = _load_stock_cache()
 
     prices_df["Date"] = pd.to_datetime(prices_df["Date"], errors="coerce")
@@ -737,6 +780,7 @@ def run_diagnosis(
         r = run_growth_snapshot(
             snap_date, prices_df, fins_fy, stock_meta,
             top_n=top_n, forward_days=forward_days,
+            fins_all=fins_all,
         )
         snapshot_results.append(r)
 
