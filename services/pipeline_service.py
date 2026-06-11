@@ -417,7 +417,15 @@ def _calc_macd(close: pd.Series):
     )
 
 
-def _tech_score_single(cp: pd.DataFrame, mode: str = "growth") -> dict:
+def _sepa_stage_score(sepa_stage) -> int:
+    """SEPA ステージを成長株テクニカルスコアの SEPA 項（0-30点）に変換。
+    Stage2(上昇)=30 / Stage3(天井)=15 / Stage1(基盤形成)=10 / Stage4(下降)=0 / 不明=0。"""
+    if sepa_stage is None or (isinstance(sepa_stage, float) and pd.isna(sepa_stage)):
+        return 0
+    return {2: 30, 3: 15, 1: 10, 4: 0}.get(int(sepa_stage), 0)
+
+
+def _tech_score_single(cp: pd.DataFrame, mode: str = "growth", sepa_stage=None) -> dict:
     """1銘柄分のテクニカルスコアを計算。mode='growth' or 'value'"""
     cp = cp.sort_values("Date").reset_index(drop=True)
 
@@ -484,17 +492,17 @@ def _tech_score_single(cp: pd.DataFrame, mode: str = "growth") -> dict:
             if latest_close > ma25:
                 ma_score = 15
     else:
-        # 成長株: 短中期トレンド継続を重視
+        # 成長株: 短中期トレンド継続を重視（SEPA 項と重複するため 30→20 に圧縮）
         if pd.notna(ma25) and pd.notna(ma60):
             if latest_close > ma25 and ma25 > ma60:
-                ma_score = 30
-            elif latest_close > ma25 and pd.notna(ma25_prev5) and ma25 > ma25_prev5:
                 ma_score = 20
+            elif latest_close > ma25 and pd.notna(ma25_prev5) and ma25 > ma25_prev5:
+                ma_score = 13
             elif latest_close > ma60:
-                ma_score = 10
+                ma_score = 7
         elif pd.notna(ma25):
             if latest_close > ma25:
-                ma_score = 15
+                ma_score = 10
     score += ma_score
 
     # ── RSI スコア（20点）
@@ -509,26 +517,34 @@ def _tech_score_single(cp: pd.DataFrame, mode: str = "growth") -> dict:
             elif 25 <= rsi < 30:    # 過売り気味、慎重
                 rsi_score = 5
         else:
-            # 成長株: トレンド継続（RSI 50-65 が最適）
+            # 成長株: トレンド継続（RSI 50-65 が最適）。20→15 に圧縮
             if 50 <= rsi <= 65:
-                rsi_score = 20
+                rsi_score = 15
             elif 40 <= rsi < 50:
-                rsi_score = 10
+                rsi_score = 8
             elif 65 < rsi <= 75:
-                rsi_score = 5
+                rsi_score = 4
     score += rsi_score
 
-    # ── MACD スコア（20点）
+    # ── MACD スコア（value:20点 / growth:15点）
     macd_score = 0
     if pd.notna(macd) and pd.notna(sig):
         golden_cross = (pd.notna(macd_p) and pd.notna(sig_p)
                         and macd_p < sig_p and macd >= sig)
-        if macd > 0 and macd > sig:
-            macd_score = 20
-        elif golden_cross:
-            macd_score = 15
-        elif macd > sig:
-            macd_score = 10
+        if mode == "value":
+            if macd > 0 and macd > sig:
+                macd_score = 20
+            elif golden_cross:
+                macd_score = 15
+            elif macd > sig:
+                macd_score = 10
+        else:
+            if macd > 0 and macd > sig:
+                macd_score = 15
+            elif golden_cross:
+                macd_score = 11
+            elif macd > sig:
+                macd_score = 7
     score += macd_score
 
     # ── 出来高スコア（15点）
@@ -544,22 +560,34 @@ def _tech_score_single(cp: pd.DataFrame, mode: str = "growth") -> dict:
             else:
                 vol_score = 0    # 出来高減少（誰も買っていない）
     else:
-        # 成長株: 当日出来高 ÷ 25日平均（ブレイク日の急増を評価）
+        # 成長株: 当日出来高 ÷ 25日平均（ブレイク日の急増を評価）。15→10 に圧縮
         if vol_avg25 > 0:
             ratio = latest_vol / vol_avg25
             if ratio >= 1.5:
-                vol_score = 15
-            elif ratio >= 1.0:
                 vol_score = 10
+            elif ratio >= 1.0:
+                vol_score = 7
     score += vol_score
 
-    # ── 高値ブレイクスコア（15点）
+    # ── 高値ブレイクスコア（value:15点 / growth:10点）
     break_score = 0
-    if pd.notna(high60) and latest_close >= high60:
-        break_score = 15
-    elif pd.notna(high20) and latest_close >= high20:
-        break_score = 10
+    if mode == "value":
+        if pd.notna(high60) and latest_close >= high60:
+            break_score = 15
+        elif pd.notna(high20) and latest_close >= high20:
+            break_score = 10
+    else:
+        if pd.notna(high60) and latest_close >= high60:
+            break_score = 10
+        elif pd.notna(high20) and latest_close >= high20:
+            break_score = 7
     score += break_score
+
+    # ── SEPA ステージスコア（30点・成長株モードのみ）
+    sepa_score = 0
+    if mode != "value":
+        sepa_score = _sepa_stage_score(sepa_stage)
+    score += sepa_score
 
     detail = {
         "ma25":     round(ma25, 1)     if pd.notna(ma25)     else None,
@@ -574,6 +602,8 @@ def _tech_score_single(cp: pd.DataFrame, mode: str = "growth") -> dict:
         "ma_score": ma_score, "rsi_score": rsi_score,
         "macd_score": macd_score, "vol_score": vol_score,
         "break_score": break_score,
+        "sepa_stage": int(sepa_stage) if (sepa_stage is not None and not (isinstance(sepa_stage, float) and pd.isna(sepa_stage))) else None,
+        "sepa_score": sepa_score,
     }
     return {"tech_score": float(score), "tech_detail": detail}
 
