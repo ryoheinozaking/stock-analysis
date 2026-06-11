@@ -661,6 +661,9 @@ _BUY_RSI_MAX_VALUE   = 50    # RSI上限を緩和（45→50）機会損失を減
 _TARGET_PCT_VALUE    = 0.35  # 第1利確目標 +35%
 _TARGET2_PCT_VALUE   = 0.40  # 第2利確目標 +40%（分割利確の目安）
 
+# signal 値 → 分析優先度ラベル（発掘エンジン再定義: 売買シグナルではなく分析の優先度）
+SIGNAL_LABELS = {"BUY": "優先精査", "WATCH": "監視", "AVOID": "除外"}
+
 
 def calc_trade_signals(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
     """
@@ -694,13 +697,16 @@ def calc_trade_signals(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
         detail     = row.get("tech_detail", {}) or {}
         rsi        = detail.get("rsi")
         ma25       = detail.get("ma25")
+        sepa_stage = detail.get("sepa_stage")
 
         # ── シグナル判定 ──────────────────────────────
         above_ma25 = (ma25 is not None) and (close > ma25)
         rsi_ok     = (rsi  is not None) and (rsi_min <= rsi <= rsi_max)
+        # 成長株モードのみ: 優先精査(BUY)は SEPA Stage2/3 に限定（Stage4 を上位にしない）
+        stage_ok   = True if mode == "value" else (sepa_stage in (2, 3))
 
         if (total >= _BUY_TOTAL_MIN and tech >= tech_min
-                and above_ma25 and rsi_ok):
+                and above_ma25 and rsi_ok and stage_ok):
             sig = "BUY"
             reason = "全条件クリア"
         elif total >= _WATCH_TOTAL_MIN:
@@ -710,6 +716,8 @@ def calc_trade_signals(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
             if tech  < tech_min:        parts.append(f"テクニカル{tech:.0f}<{tech_min:.0f}")
             if not above_ma25:          parts.append("MA25下")
             if not rsi_ok:              parts.append(f"RSI={rsi:.0f}(対象:{rsi_min}-{rsi_max})" if rsi else "RSI範囲外")
+            if mode != "value" and not stage_ok:
+                parts.append(f"SEPA Stage{sepa_stage}(優先精査はStage2/3)")
             reason = " / ".join(parts) if parts else "スコア基準は満たすが条件不足"
         else:
             sig    = "AVOID"
