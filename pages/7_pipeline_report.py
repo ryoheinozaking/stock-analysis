@@ -109,7 +109,7 @@ def _judgment_color(j: str) -> str:
 
 
 _SIG_COLOR = {"BUY": "#26a69a", "WATCH": "#ff9800", "AVOID": "#ef5350"}
-_SIG_LABEL = {"BUY": "BUY", "WATCH": "WATCH", "AVOID": "AVOID"}
+_SIG_LABEL = {"BUY": "優先精査", "WATCH": "監視", "AVOID": "除外"}  # 発掘エンジン: 分析優先度
 
 
 def _render_scorecard(rank: int, row, ai_stocks: dict, key_prefix: str = "t1", mode: str = "growth") -> None:
@@ -804,6 +804,17 @@ with tab2:
         sepa2_count = int((scored["sepa_stage"] == 2).sum()) if not scored.empty else 0
         st.subheader(f"SEPA2絞り込み TOP10（全{sepa2_count}件中）")
         st.caption("フィルタ通過銘柄のうち SEPA Stage2 を満たす銘柄をスコア順に表示。")
+        # 二刀流への動線: 優先精査(BUY) を「次にかけるべき分析」として提示
+        _skill = "飛躍分析" if cached_mode == "growth" else "深層分析"
+        _priority = (sepa2_df[sepa2_df["signal"] == "BUY"]
+                     if "signal" in sepa2_df.columns else sepa2_df.head(0))
+        if len(_priority) > 0:
+            st.markdown(f"**→ 次にかけるべき分析（{_skill}推奨）** ─ パイプラインは発掘、最終判定は二刀流で")
+            for _, _r in _priority.head(5).iterrows():
+                st.markdown(
+                    f"- `{_skill} {_r['code_4']}` — {_r['company_name']}"
+                    f"（総合 {_r['total_score']:.0f} / Stage2 / 優先精査）"
+                )
         for rank, row in enumerate(sepa2_df.itertuples(), 1):
             _render_scorecard(rank, row, ai_stocks, key_prefix="t2", mode=cached_mode)
 
