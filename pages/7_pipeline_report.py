@@ -666,8 +666,10 @@ with st.sidebar:
 - **ファンダ** (60%)
   - Growth 50% / Quality 25% / Value 25%
 - **テクニカル** (40%)
-  - MA 30pt / RSI 20pt（50-65）/ MACD 20pt
-  - 出来高 15pt / 高値ブレイク 15pt
+  - **SEPA 30pt**（Stage2=30 / Stage3=15 / Stage1=10 / Stage4=0）
+  - MA 20pt / RSI 15pt（50-65）/ MACD 15pt
+  - 出来高 10pt / 高値ブレイク 10pt
+- **優先精査** = 全条件クリア × SEPA Stage2/3（過熱は除外）
 """)
 
 # ── セッション管理（リロード時はキャッシュから復元） ──────────────────
@@ -804,17 +806,32 @@ with tab2:
         sepa2_count = int((scored["sepa_stage"] == 2).sum()) if not scored.empty else 0
         st.subheader(f"SEPA2絞り込み TOP10（全{sepa2_count}件中）")
         st.caption("フィルタ通過銘柄のうち SEPA Stage2 を満たす銘柄をスコア順に表示。")
-        # 二刀流への動線: 優先精査(BUY) を「次にかけるべき分析」として提示
+        # 二刀流への動線: 優先精査(BUY) を「次にかけるべき分析」として目立たせて提示
         _skill = "飛躍分析" if cached_mode == "growth" else "深層分析"
         _priority = (sepa2_df[sepa2_df["signal"] == "BUY"]
                      if "signal" in sepa2_df.columns else sepa2_df.head(0))
         if len(_priority) > 0:
-            st.markdown(f"**→ 次にかけるべき分析（{_skill}推奨）** ─ パイプラインは発掘、最終判定は二刀流で")
+            _lines = [
+                f"### → 次にかけるべき分析（{_skill}推奨）",
+                "パイプラインは**発掘**、最終判定は**二刀流**で。過熱していない優先精査（Stage2）を最優先候補として提示:",
+            ]
             for _, _r in _priority.head(5).iterrows():
-                st.markdown(
-                    f"- `{_skill} {_r['code_4']}` — {_r['company_name']}"
+                _lines.append(
+                    f"- **`{_skill} {_r['code_4']}`** — {_r['company_name']}"
                     f"（総合 {_r['total_score']:.0f} / Stage2 / 優先精査）"
                 )
+            _ref = sepa2_df[sepa2_df["signal"] != "BUY"].head(3)
+            if len(_ref) > 0:
+                _lines.append(
+                    "\n参考（Stage2 だが過熱等で監視中）: "
+                    + " / ".join(
+                        f"{_r['code_4']} {_r['company_name']}"
+                        for _, _r in _ref.iterrows()
+                    )
+                )
+            st.success("\n".join(_lines))
+        else:
+            st.info(f"現在、優先精査（過熱していない × Stage2）の {_skill} 推奨候補はありません。")
         for rank, row in enumerate(sepa2_df.itertuples(), 1):
             _render_scorecard(rank, row, ai_stocks, key_prefix="t2", mode=cached_mode)
 
