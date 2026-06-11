@@ -618,7 +618,9 @@ def calc_tech_scores(
     for _, row in filtered_df.iterrows():
         code = row["code"]   # 5桁コード
         cp   = prices_df[prices_df["Code"] == code]
-        res  = _tech_score_single(cp, mode=mode) if len(cp) >= 26 else {"tech_score": np.nan, "tech_detail": {}}
+        stage = row.get("sepa_stage")
+        res  = (_tech_score_single(cp, mode=mode, sepa_stage=stage)
+                if len(cp) >= 26 else {"tech_score": np.nan, "tech_detail": {}})
         res["code"] = code
         results.append(res)
 
