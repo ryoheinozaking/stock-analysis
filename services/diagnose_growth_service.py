@@ -80,7 +80,7 @@ def _build_recent_yoy(fins_q_past: pd.DataFrame) -> pd.DataFrame:
             "rev_yoy_q": _yoy(latest["Sales"], prev["Sales"]),
             "op_yoy_q":  _yoy(latest["OP"],    prev["OP"]),
         })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=["code", "rev_yoy_q", "op_yoy_q"])
 
 BENCHMARK_CODE = "13060"   # TOPIX連動ETF (1306)
 
