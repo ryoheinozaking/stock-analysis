@@ -85,6 +85,22 @@ def test_filter_fy_statements_drops_revisions():
     assert out.iloc[0]["DocType"] == _STMT
 
 
+def test_filter_statements_keeps_quarterly_drops_revisions():
+    """四半期決算短信は残し、予想修正レコード（実績列が空）は落とす。"""
+    from services.fins_utils import filter_statements
+
+    df = _fins_df([
+        _fins_row("10000", "2025-08-05", "1QFinancialStatements_Consolidated_JP",
+                  "2026-03-31", per_type="1Q", Sales=250.0),
+        _fins_row("10000", "2025-05-10", _STMT, "2025-03-31", Sales=1000.0),
+        _fins_row("10000", "2025-10-14", _EARN_REV, "2026-03-31", per_type="2Q"),
+        _fins_row("10000", "2025-11-01", _DIV_REV, "2026-03-31"),
+    ])
+    out = filter_statements(df)
+    assert len(out) == 2
+    assert not out["DocType"].astype(str).str.contains("Revision").any()
+
+
 def test_dedupe_same_fy_keeps_latest_correction():
     from services.fins_utils import dedupe_same_fy
 
@@ -219,6 +235,29 @@ def test_select_top_candidates_ranks_by_total_score():
     top2 = select_top_candidates(scored, 2)
     assert list(top2["code"]) == ["C", "A"]
     assert list(top2["total_score"]) == [90.0, 62.0]
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  diagnose_growth_service._build_recent_yoy（四半期 YoY）
+# ════════════════════════════════════════════════════════════════════════
+
+def test_build_recent_yoy_ignores_revision_records():
+    """最新の四半期レコードが予想修正（実績列が空）でも、
+    YoY は決算短信同士（今年2Q vs 前年2Q）で計算される。"""
+    from services.diagnose_growth_service import _build_recent_yoy
+
+    fins = _fins_df([
+        _fins_row("40000", "2024-11-10", "2QFinancialStatements_Consolidated_JP",
+                  "2025-03-31", per_type="2Q", Sales=500.0, OP=50.0),
+        _fins_row("40000", "2025-11-10", "2QFinancialStatements_Consolidated_JP",
+                  "2026-03-31", per_type="2Q", Sales=600.0, OP=60.0),
+        # 最新: 業績予想修正（CurPerType=2Q だが実績列は空）
+        _fins_row("40000", "2026-01-15", _EARN_REV, "2026-03-31", per_type="2Q"),
+    ])
+    out = _build_recent_yoy(fins)
+    row = out[out["code"] == "40000"].iloc[0]
+    assert row["rev_yoy_q"] == pytest.approx(20.0)
+    assert row["op_yoy_q"] == pytest.approx(20.0)
 
 
 # ════════════════════════════════════════════════════════════════════════

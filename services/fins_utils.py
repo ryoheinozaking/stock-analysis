@@ -41,6 +41,19 @@ def filter_fy_statements(df: pd.DataFrame) -> pd.DataFrame:
     return df[mask]
 
 
+def filter_statements(df: pd.DataFrame) -> pd.DataFrame:
+    """財務諸表（実績）レコードのみ返す（四半期・FY とも）。
+
+    DocType に 'FinancialStatements' を含むレコードに限定することで、
+    EarnForecastRevision / DividendForecastRevision（CurPerType が 1Q-3Q/FY でも
+    実績列が空）を除外する。期間で絞りたい場合は呼び出し側で CurPerType を併用する。
+    DocType 列がない場合（古いキャッシュ）はそのまま返す。
+    """
+    if df.empty or "DocType" not in df.columns:
+        return df
+    return df[df["DocType"].astype(str).str.contains("FinancialStatements", na=False)]
+
+
 def dedupe_same_fy(df: pd.DataFrame) -> pd.DataFrame:
     """同一 (Code, CurFYEn) の重複（訂正短信の再開示）は DiscDate 最新のみ残す。
 

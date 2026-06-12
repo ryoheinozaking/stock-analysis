@@ -35,6 +35,7 @@ from services.pipeline_service import (
     calc_total_score,
 )
 from services.batch_service import _calc_sepa
+from services.fins_utils import filter_statements
 from services.split_adjust import normalize_close
 
 _ROOT    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -54,8 +55,10 @@ FACTORS_ALL   = FACTORS_FUNDA + FACTORS_SCORE
 def _build_recent_yoy(fins_q_past: pd.DataFrame) -> pd.DataFrame:
     """as_of 時点で開示済みの最新四半期(非FY)の YoY(売上/営業益)を計算。
     四半期 Sales/OP は YTD 累計のため、同 CurPerType の前年同四半期と比較する。
+    予想修正レコード（CurPerType が 1Q-3Q でも実績列が空）は除外する。
     Returns DataFrame[code, rev_yoy_q, op_yoy_q]."""
-    q = fins_q_past[fins_q_past["CurPerType"].isin(["1Q", "2Q", "3Q"])].copy()
+    q = filter_statements(fins_q_past)
+    q = q[q["CurPerType"].isin(["1Q", "2Q", "3Q"])].copy()
     if q.empty:
         return pd.DataFrame(columns=["code", "rev_yoy_q", "op_yoy_q"])
     q["Sales"]    = pd.to_numeric(q["Sales"], errors="coerce")
