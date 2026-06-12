@@ -3,11 +3,16 @@
 パイプラインサービス：3段階スクリーニング + Claude API 分析
 
 フロー:
-  ① ハードフィルタ（全3800銘柄 → 約50銘柄）
-  ② ファンダスコア  Growth50% + Quality25% + Value25%（パーセンタイル正規化 0〜100）
-  ③ テクニカルスコア MA30 + RSI20 + MACD20 + Volume15 + Breakout15（0〜100）
+  ① ハードフィルタ（全約3800銘柄 → モード別条件で絞り込み）
+  ② ファンダスコア（パーセンタイル正規化 0〜100）
+     - 成長株:   Growth50 + Quality25 + Value25
+     - バリュー: PBR50 + PSR30 + PER10 + op_margin10
+                 + 経営変化ボーナス（アクティビスト/増配/増益/V字転換/配当性向）
+  ③ テクニカルスコア（0〜100）
+     - 成長株:   SEPA30 + MA20 + RSI15 + MACD15 + 出来高10 + ブレイク10
+     - バリュー: MA200乖離30 + RSI20 + MACD20 + 需給15 + 高値ブレイク15
   Final = Funda × 0.60 + Technical × 0.40
-  上位10銘柄 → Claude API 分析
+  total_score 上位（成長株10 / バリュー20）→ Claude API 分析
 """
 
 import os
@@ -23,7 +28,8 @@ import pandas as pd
 from services.split_adjust import (
     normalize_close, normalize_volume, normalize_high, split_factor_between,
 )
-from services.governance_score import calc_governance_score_for_df
+from services.governance_score import calc_governance_score_for_df, get_activist_info
+from services.fins_utils import filter_fy_statements, dedupe_same_fy
 
 _ROOT             = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _STOCK_CACHE_PATH = os.path.join(_ROOT, "data", "stock_cache.parquet")
@@ -118,9 +124,15 @@ def _load_prices() -> pd.DataFrame:
     return pd.read_parquet(_PRICES_PATH)
 
 def _load_fins_fy() -> pd.DataFrame:
-    """fins_cache から年度（FY）決算レコードのみ返す。"""
+    """fins_cache から年度（FY）決算短信（実績）レコードのみ返す。
+
+    CurPerType=='FY' には業績予想修正・配当予想修正（実績列が空）も含まれるため
+    DocType で決算短信に限定する（詳細は services/fins_utils.py 参照）。
+    同一決算期の訂正重複はここでは落とさない — バックテストが DiscDate <= as_of で
+    絞った後に dedup する必要があるため、_build_fins_metrics 側で行う。
+    """
     df = pd.read_parquet(_FINS_CACHE_PATH)
-    fy = df[df["CurPerType"] == "FY"].copy()
+    fy = filter_fy_statements(df).copy()
     # 数値型に変換
     for col in ["Sales", "OP", "NP", "EPS", "Eq", "EqAR", "ShOutFY", "CFO"]:
         fy[col] = pd.to_numeric(fy[col], errors="coerce")
@@ -138,6 +150,10 @@ def _build_fins_metrics(fins_fy: pd.DataFrame, prices_df: pd.DataFrame) -> pd.Da
     eps_growth / op_margin / equity_ratio / market_cap_base を返す。
     prices_df を使い、株式分割を跨ぐ EPS 比較・sh_out を末尾日スケールに揃える。
     """
+    # 同一決算期の訂正短信重複を最新開示のみに絞る
+    # （「前期」が同一年度の重複になると成長率・増配・増益判定が壊れるため）
+    fins_fy = dedupe_same_fy(fins_fy)
+
     # 事前にコード別グループ化（ループ内での全行検索を排除）
     prices_df = prices_df.copy()
     prices_df["Date"]      = pd.to_datetime(prices_df["Date"], errors="coerce")
@@ -218,14 +234,14 @@ def _build_fins_metrics(fins_fy: pd.DataFrame, prices_df: pd.DataFrame) -> pd.Da
         op_curr = pd.to_numeric(curr.get("OP"), errors="coerce")
         if len(grp) >= 2 and pd.notna(op_curr):
             op_prev1 = pd.to_numeric(grp.iloc[1].get("OP"), errors="coerce")
-            if pd.notna(op_prev1) and op_prev1 > 0 and op_curr >= op_prev1:
+            if pd.notna(op_prev1) and op_prev1 > 0 and op_curr > op_prev1:
                 op_trend = 1
                 if len(grp) >= 3:
                     op_prev2 = pd.to_numeric(grp.iloc[2].get("OP"), errors="coerce")
                     if pd.notna(op_prev2) and op_prev2 > 0:
-                        if op_prev1 >= op_prev2:
+                        if op_prev1 > op_prev2:
                             op_trend = 2       # 2期連続増加
-                        else:
+                        elif op_prev1 < op_prev2:
                             op_turnaround = True  # 前期減益→今期回復（V字転換）
 
         # 配当性向（DivAnn ÷ EPS × 100）
@@ -301,8 +317,10 @@ def _percentile(series: pd.Series, invert: bool = False) -> pd.Series:
 def calc_funda_score(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
     """
     ファンダスコアを計算して df に列追加して返す。
-    mode='growth': Growth50 + Quality25 + Value25
-    mode='value' : Value50 + Quality25 + Growth25
+    mode='growth': Growth50 + Quality25 + Value25（合計 100pt）
+    mode='value' : PBR50 + PSR30 + PER10 + op_margin10（合計 100pt）
+                   + 経営変化ボーナス最大 55pt
+                   （アクティビスト10 / 増配10 / 増益10 / V字転換15 / 配当性向10）
     PSR = market_cap / sales_fy
     """
     df = df.copy()
@@ -361,7 +379,7 @@ def calc_funda_score(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
         # V字転換ボーナス（前期減益→今期回復: +15pt）
         # 2期連続増益（+10pt）より重く評価 = 最も上昇しやすいゾーン
         if "op_turnaround" in df.columns:
-            score += df["op_turnaround"].fillna(False).astype(float) * 15.0
+            score += df["op_turnaround"].eq(True).astype(float) * 15.0
 
         # 配当性向ボーナス（段階評価）
         # 【2026-04-30 改訂】従来は 0-70% で一律 +5pt の二値判定だったが、
@@ -614,10 +632,17 @@ def calc_tech_scores(
     mode: str = "growth",
 ) -> pd.DataFrame:
     """filtered_df の各銘柄のテクニカルスコアを計算して列追加。"""
+    # 対象銘柄分だけ一度に抽出してコード別グループ化
+    # （銘柄ごとに全行 boolean mask を繰り返すとバックテストで支配的なコストになる）
+    codes_set = set(filtered_df["code"])
+    sub = prices_df[prices_df["Code"].isin(codes_set)]
+    prices_grouped = {code: grp for code, grp in sub.groupby("Code")}
+    _empty = pd.DataFrame()
+
     results = []
     for _, row in filtered_df.iterrows():
         code = row["code"]   # 5桁コード
-        cp   = prices_df[prices_df["Code"] == code]
+        cp   = prices_grouped.get(code, _empty)
         stage = row.get("sepa_stage")
         res  = (_tech_score_single(cp, mode=mode, sepa_stage=stage)
                 if len(cp) >= 26 else {"tech_score": np.nan, "tech_detail": {}})
@@ -639,6 +664,18 @@ def calc_total_score(df: pd.DataFrame) -> pd.DataFrame:
     t = df["tech_score"].fillna(0)
     df["total_score"] = (f * 0.60 + t * 0.40).round(2)
     return df.sort_values("total_score", ascending=False)
+
+
+def select_top_candidates(scored: pd.DataFrame, top_n: int) -> pd.DataFrame:
+    """total_score 純順位で Top-N を選ぶ。
+
+    バックテスト（backtest_value_service）の α 検証は total_score 順位ベース。
+    calc_trade_signals の BUY→WATCH→AVOID 並べ替えは表示用であり、
+    選定に使うと検証済み戦略と別のポートフォリオになるため使わない。
+    """
+    return (scored.sort_values("total_score", ascending=False)
+                  .head(top_n)
+                  .reset_index(drop=True))
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -894,22 +931,63 @@ _SYSTEM_PROMPT_VALUE = """あなたは日本株のバリュー投資専門アナ
 
 def _build_prompt(top10: pd.DataFrame, mode: str = "growth") -> str:
     mode_label = "バリュー株" if mode == "value" else "成長株"
+
+    def _f(v, fmt="{:.1f}"):
+        return fmt.format(v) if (v is not None and pd.notna(v)) else "N/A"
+
     lines = [
-        f"# {mode_label}スクリーニング結果 Top10（{datetime.now().strftime('%Y-%m-%d')}）",
+        f"# {mode_label}スクリーニング結果 Top{len(top10)}（{datetime.now().strftime('%Y-%m-%d')}）",
         "",
         "以下の銘柄を分析してください。",
         "",
-        "| # | コード | 会社名 | 株価 | 時価総額(億) | 売上成長% | 利益成長% | ROE% | PER | PBR | ファンダ | テクニカル | 総合 |",
-        "|---|--------|--------|------|-------------|---------|---------|------|-----|-----|--------|---------|------|",
     ]
-    for i, row in enumerate(top10.itertuples(), 1):
-        cap = f"{row.market_cap/1e8:.0f}" if pd.notna(row.market_cap) and row.market_cap > 0 else "N/A"
-        lines.append(
-            f"| {i} | {row.code_4} | {row.company_name} | {row.close:.0f} | {cap} "
-            f"| {row.rev_growth:.1f} | {row.profit_growth:.1f} | {row.ROE:.1f} "
-            f"| {row.PER:.1f} | {row.PBR:.1f} "
-            f"| {row.funda_score:.1f} | {row.tech_score:.1f} | {row.total_score:.1f} |"
-        )
+    if mode == "value":
+        # バリューモードはスコアの主軸である PBR/PSR を前面に出す
+        lines += [
+            "| # | コード | 会社名 | 株価 | 時価総額(億) | PBR | PSR | PER | ROE% | 売上成長% | 利益成長% | ファンダ | テクニカル | 総合 |",
+            "|---|--------|--------|------|-------------|-----|-----|-----|------|---------|---------|--------|---------|------|",
+        ]
+        for i, row in enumerate(top10.itertuples(), 1):
+            cap = f"{row.market_cap/1e8:.0f}" if pd.notna(row.market_cap) and row.market_cap > 0 else "N/A"
+            lines.append(
+                f"| {i} | {row.code_4} | {row.company_name} | {row.close:.0f} | {cap} "
+                f"| {_f(row.PBR, '{:.2f}')} | {_f(getattr(row, 'psr', None), '{:.2f}')} | {_f(row.PER)} "
+                f"| {_f(row.ROE)} | {_f(row.rev_growth)} | {_f(row.profit_growth)} "
+                f"| {row.funda_score:.1f} | {row.tech_score:.1f} | {row.total_score:.1f} |"
+            )
+        # 経営変化シグナル（バリュー戦略の真の α 源。バリュートラップ判別の材料）
+        lines += ["", "【経営変化シグナル】"]
+        for i, row in enumerate(top10.itertuples(), 1):
+            sigs = []
+            if bool(getattr(row, "op_turnaround", False) or False):
+                sigs.append("V字転換（前期減益→今期回復）")
+            else:
+                op_t = int(getattr(row, "op_trend", 0) or 0)
+                if op_t:
+                    sigs.append("営業益" + ("2期連続増" if op_t >= 2 else "増"))
+            div_t = int(getattr(row, "div_trend", 0) or 0)
+            if div_t:
+                sigs.append(("2期連続" if div_t >= 2 else "") + "増配")
+            pr = getattr(row, "payout_ratio", None)
+            if pr is not None and pd.notna(pr):
+                sigs.append(f"配当性向{pr:.0f}%")
+            if get_activist_info(str(row.code_4)):
+                sigs.append("アクティビスト保有")
+            lines.append(f"{i}. {row.code_4} {row.company_name}: "
+                         + ("、".join(sigs) if sigs else "特になし"))
+    else:
+        lines += [
+            "| # | コード | 会社名 | 株価 | 時価総額(億) | 売上成長% | 利益成長% | ROE% | PER | PBR | ファンダ | テクニカル | 総合 |",
+            "|---|--------|--------|------|-------------|---------|---------|------|-----|-----|--------|---------|------|",
+        ]
+        for i, row in enumerate(top10.itertuples(), 1):
+            cap = f"{row.market_cap/1e8:.0f}" if pd.notna(row.market_cap) and row.market_cap > 0 else "N/A"
+            lines.append(
+                f"| {i} | {row.code_4} | {row.company_name} | {row.close:.0f} | {cap} "
+                f"| {_f(row.rev_growth)} | {_f(row.profit_growth)} | {_f(row.ROE)} "
+                f"| {_f(row.PER)} | {_f(row.PBR)} "
+                f"| {row.funda_score:.1f} | {row.tech_score:.1f} | {row.total_score:.1f} |"
+            )
     lines += [
         "",
         "各銘柄について投資分析を行い、指定のJSONフォーマットで返してください。",
@@ -986,7 +1064,7 @@ def analyze_with_claude(top10: pd.DataFrame, mode: str = "growth") -> dict:
 
     resp = client.messages.create(
         model=MODEL,
-        max_tokens=8192,
+        max_tokens=16384,   # バリューモードは20銘柄分のJSONを返すため余裕を持たせる
         system=system_prompt,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -1061,10 +1139,12 @@ def run_pipeline(use_claude: bool = True, progress_callback=None, mode: str = "g
     _cb("地合いフィルター計算中...")
     market = calc_market_condition(prices_df)
 
-    # バリュー株モードは Top20 集中（診断: PBR_only Top20 で α +18.14% / 勝率 86%）
+    # バリュー株モードは Top20 集中
+    # （2026-06-12 再計測: fwd250×52snap で Top20 α(TPX)+9.4% / 勝率76.5%。
+    #   Top3〜30 で α はほぼフラットのため分散とのバランスで 20 を維持）
     # 成長株モードは従来通り Top10
     top_n = 20 if mode == "value" else 10
-    top10 = scored.head(top_n).reset_index(drop=True)   # 後方互換のためキー名は top10 維持
+    top10 = select_top_candidates(scored, top_n)   # 後方互換のためキー名は top10 維持
 
     ai_result = None
     if use_claude:

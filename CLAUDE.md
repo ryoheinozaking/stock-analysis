@@ -1,8 +1,34 @@
 # stock_analysis — プロジェクト概要
 
-> **セッション開始時の必須手順**: CLIのメモリが `C:\Users\ryohei\.claude\projects\C--Users-ryohei\memory\` にあります。`MEMORY.md` を読み込んでから各メモリファイルを参照してください。
+> **🚨🚨 PDF 取扱いルール（最優先・例外なし）🚨🚨**
+>
+> **PDF ファイルを扱うときは絶対に `Read` ツールを使うな。** Read ツールは pdftoppm に依存し Windows でこの環境では動かない。さらに pypdf / pdftotext / pdfplumber も**日本語 PDF で壊れる**（ToUnicode CMap 不在 + Windows cryptography DLL 問題）。
+>
+> **必ず以下を実行**:
+>
+> ```bash
+> .venv/Scripts/python.exe scripts/extract_pdf.py "<pdf path>"
+> ```
+>
+> （PyMuPDF を使うラッパースクリプト。`.raw/pdfs/任天堂.pdf` 等も完璧に処理可能）
+>
+> - 出力: UTF-8 テキストが stdout に出る。`--save` を付けると同名 `.txt` も保存
+> - 「PDF が壊れている / 読めない」と判断する前に、まずこのスクリプトを試すこと
+> - スクリプトが無い場合: `git pull` してから上記を実行
+>
+> ---
+>
+> **🌟 マスター運用ルールは vault にあり**: `C:\Users\ryohei\iCloudDrive\iCloud~md~obsidian\LLM Wiki\CLAUDE.md`
+>
+> セッション開始時、**まずマスターを Read で読み込むこと**。マスターには以下が含まれる:
+> - セッション開始時の必須手順（メモリ読込含む）
+> - ユーザ基本情報（言語・環境）
+> - プロジェクト一覧
+> - LLM Wiki 運用ルール（PDF ingest・wikilinks 規約・PyMuPDF 等）
+>
+> このファイル（`stock_analysis/CLAUDE.md`）は stock_analysis 固有の技術詳細のみを記載する。
 
-
+---
 
 日本株のスクリーニング・分析・ポートフォリオ管理ツール。J-Quants API v2 を主データソースとし、TDnet で適時開示情報を補完する。Streamlit 製 Web アプリとして Streamlit Cloud にデプロイ済み。
 
@@ -107,12 +133,41 @@ stock_analysis/
 │   ├── ai_analysis.json          # ポートフォリオAI分析結果（オンデマンド保存）
 │   ├── backtest_prices/          # バックテスト用OHLCVキャッシュ（銘柄別CSV）
 │   ├── fins_cache/               # 決算データキャッシュ（銘柄別CSV）
+│   ├── da_cache/                 # 深層分析ヘルパー出力JSON（Claude Codeが読む）
 │   ├── backtest_records.csv      # バックテスト詳細トレード記録
 │   └── backtest_summary.csv      # バックテスト集計統計
+│
+├── scripts/
+│   ├── extract_pdf.py            # PDF テキスト抽出（PyMuPDF、日本語対応）
+│   ├── deep_analysis_helper.py   # 深層分析用 J-Quants 株価+テクニカル取得
+│   └── ...
 │
 └── styles/
     └── custom.css                # カスタムCSS（スマホ対応含む）
 ```
+
+### 深層分析ヘルパー (scripts/deep_analysis_helper.py)
+
+Claude Code の `deep-analysis-jp` スキルが使う J-Quants データ取得ヘルパー。**Streamlit パイプラインが既にメンテしている `data/prices.parquet` + `data/fins_cache.parquet` を直読み**するため、Claude Code Bash の SSL 制限を回避できる。
+
+```bash
+.venv/Scripts/python.exe scripts/deep_analysis_helper.py <ticker> --save
+```
+
+- ticker: 4桁数字（7974）/ 5桁（79740）/ 英数字混合（290A）いずれも可
+- 出力: stdout + `--save` で `data/da_cache/<TICKER>.json`
+- 内容: 株価・MA5/25/60/200・RSI・MACD・52週レンジ・出来高・分割イベント・配当履歴 5-7 期・四半期決算 8 件
+- `services/split_adjust` で末尾日スケールに正規化済み（生 OHLC × cum_factor）
+
+**データソース切替**:
+- `--source local` (デフォルト): parquet 直読み。Claude Code Bash でそのまま動く
+- `--source api`: J-Quants v2 直接呼び出し。ユーザのターミナル実行のみ。普段は local で十分
+
+**鮮度管理**: 出力 JSON の `cache_info` で parquet 最終更新日を確認。3 営業日以上古ければ Streamlit で「データ更新」ボタン押下。
+
+**重要設計判断**: `screener.JQuantsClient` は AdjC を Close にリネームして生 C を捨てるため流用不可。ヘルパー内では独自に `RawJQuantsClient`（api モード用）と `LocalParquetClient`（local モード用）を実装し、いずれも生 OHLC + AdjFactor を保持。
+
+**sector_comparison 機能（2026-05-26 追加）**: `data/stock_cache.parquet`（3,781 銘柄 × 40 列の計算済み指標）を読み、自銘柄のセクター内 percentile・SEPA Stage 分布・モメンタムシグナル分布・同業 Top 5 を算出。深層分析の「主観的な過熱感」を「セクター内上位 X%」の客観数値に翻訳。local モード限定。
 
 ---
 
@@ -217,40 +272,63 @@ stock_analysis/
 - PBR +0.151（37/37 月でプラス）/ PSR +0.143 / PER +0.082 ← 採用
 - ROE -0.027 / rev_growth -0.017 / profit_growth -0.017 ← 撤廃
 
-### テクニカルスコア（成長株モードと共通の関数で mode 分岐）
+### テクニカルスコア（成長株モードと共通の関数 `_tech_score_single` で mode 分岐）
+
+**バリューモード（100pt）**
 - MA 30pt: MA200乖離率で評価（0〜+5%が30pt最高、+5〜+15%が20pt、+15%超は10pt、-5〜0%は15pt）
-- RSI 20pt: 30-50ゾーンを最高評価（成長株は50-65）
+- RSI 20pt: 30-45ゾーンを最高評価（45-55は10pt、25-30は5pt）
 - MACD 20pt / 出来高（5日/20日比） 15pt / 高値ブレイク 15pt
+
+**成長株モード（100pt）**
+- SEPA 30pt（Stage2=30 / Stage3=15 / Stage1=10 / Stage4=0）
+- MA 20pt（close>MA25>MA60 のトレンド整列） / RSI 15pt（50-65 最高）
+- MACD 15pt / 出来高（当日/25日比） 10pt / 高値ブレイク 10pt
 
 ### シグナル判定
 - BUY: 総合 ≥ 60 / テクニカル ≥ 55 / RSI 30-50 / 株価 > MA25
 - WATCH: 総合 ≥ 50（条件不足の場合）
 - 利確: 第1目標 +35% / 第2目標 +40%
 - 損切り: -15%（or MA25の高い方）
+- **Top-N 選定は total_score 純順位**（`select_top_candidates`）。シグナル順
+  （BUY→WATCH→AVOID）の並べ替えは表示用であり選定には使わない
+  （バックテストの検証が total_score 順位ベースのため。2026-06-12 修正）
 
-### バックテスト検証実績（2026-04-29 月次37スナップショット × 12ヶ月フォワード）
+### バックテスト検証実績
 
-#### 旧仕様 (ROE>=8%, 旧スコア, Top50) vs 新仕様 (ROE撤廃, PBR-heavy, Top20)
+#### 【2026-06-12 再計測】fins レコード選別バグ修正後（fwd 250日 × 52 月次スナップショット）
 
-| 指標 | 旧仕様 Top50 | **新仕様 Top20** | 改善 |
-|---|---|---|---|
-| 平均リターン | +21.46% | **+37.67%** | +16pt |
-| 勝率 | 72.1% | **86.1%** | +14pt |
-| トラップ率(≤-20%) | 4.6% | **0.9%** | -3.7pt |
-| **α (vs TOPIX)** | **+1.64%** | **+18.14%** | +16.5pt |
-| α > 0 の月 | 23/36 | **35/37** | +12 |
+CurPerType=='FY' に混入していた予想修正レコードの除外バグ（J-Quants リファレンスの⚠️参照）を
+修正し、ユニバースが約 +76%（時点あたり約350→500-670銘柄）拡大した状態で再計測:
+
+| 指標 | Top20（現行設定） |
+|---|---|
+| 平均リターン | +22.2% |
+| **α (vs TOPIX ETF)** | **+9.4%** |
+| α (vs universe) | +8.0% |
+| 勝率 | 76.5% |
+| サンプル | 847 銘柄・スナップショット |
+
+- 修正前の直近計測（2026-05-03, 同条件 fwd250）: mean +21.2% / α +8.97% / 勝率 78.7%
+  → **α はユニバース拡大後も維持**（データバグは α の源泉ではなかった）
+- funda_score IC **+0.179**（38/42 月でプラス, t=+11.9）→ PBR-heavy 設計は引き続き支持
+- 修正後は eps_growth IC +0.042 / profit_growth +0.039 と**わずかに正へ転じた**
+  （旧計測の -0.017 はデータバグで前期比較が壊れていた影響を含む可能性）。
+  ただし実用レベル（0.10）未満のため配点は変更しない
+- 重みスイープ: funda 1.0 が α 最大（+9.9%）だが勝率は funda 0.4-0.5 が最良。現行 0.6/0.4 は妥当圏
+- Top3〜30 で α は +9〜10% でほぼフラット → Top20 は分散と α のバランスとして妥当
+
+#### 参考【旧数値・2026-04-29 計測】（37スナップショット × 365日 fwd、データバグ込み）
+旧仕様 Top50 α+1.64% → PBR-heavy Top20 α+18.14%/勝率86.1% の比較で現行設計を決定した。
+この絶対値は「ユニバース2割欠落 + 365日fwd + 生存バイアス」を含むため、現在は参照値扱い。
 
 #### ⚠️ 期待値の現実調整
+生存バイアス（廃止銘柄が prices.parquet に未収録）は依然残存。
+実運用での realistic な期待 α は **+5〜10%/年**、勝率 70% 前後と見るのが妥当。
 
-backtest 数値は生存バイアス（廃止銘柄が prices.parquet に未収録）により**約2倍に増幅**されている可能性大。
-実運用での realistic な期待 α は **+10〜15%/年**、勝率 70-75% と見るのが妥当。
-それでも旧仕様の +1.64% から大幅改善で、戦略として意味あり。
-
-#### 主要診断結果（37 月次 backtest）
-- **Top10〜20 が最良**（α 集中。50以上は分散しすぎて TOPIX に近づく）
+#### 主要診断結果（旧37ヶ月 backtest より・定性的には引き続き有効）
 - **Top10 銘柄の β = 0.997** = TOPIX とほぼ同振幅。R² = 0.86 → リターンの 86% は TOPIX で説明
 - セクター集中: 自動車・機械・卸売業で 41%（東証 PBR 要請ターゲット）
-- 銘柄重複: ユニーク 65 銘柄を 37 ヶ月で回しているだけ → 実質 low-turnover
+- 実質 low-turnover（同じ銘柄群を回し続ける）
 
 ---
 
@@ -329,11 +407,30 @@ score += max(0, 10 - abs(rsi - 50) / 5)  # RSI: 50に近いほど高得点
 CLAUDE.md/コードに散らばっていた「権利修正済: AdjO/H/L/C/Vo を使用」の記述は **単発スナップショット利用時のみ妥当**。長期蓄積データには当てはまらない。
 
 ### fins/summary 主要カラム
-- 実績: `Sales, OP, NP, EPS, BPS, Eq, TA, CFO`（単位: **百万円**。EPS/BPS は円/株）
+- 実績: `Sales, OP, NP, EPS, BPS, Eq, TA, CFO`（単位: **円**。EPS/BPS は円/株）
 - 配当: `DivAnn, FDivAnn`（予想年間配当）
 - 予想: `FSales, FOP, FNP, FEPS`（今期予想）
 - `CurPerType` — `FY`（通期） / `1Q`〜`3Q`（四半期）
-- `DiscDate` — 開示日
+- `DiscDate` — 開示日 / `DocType` — 文書種別 / `CurFYEn` — 決算期末
+
+#### ⚠️ CurPerType=='FY' フィルタの罠（2026-06-12 修正）
+
+`CurPerType=='FY'` は「FY 期間に関する開示」であって**決算短信とは限らない**。
+業績予想修正（`EarnForecastRevision`）・配当予想修正（`DividendForecastRevision`）も
+`CurPerType=='FY'` を持ち、これらは**実績列（Sales/OP/EPS/Eq/ShOutFY）がすべて空**。
+
+修正前の実測影響: 最新 FY レコードが予想修正の銘柄が 757/3,785（20%）あり、
+ハードフィルタで無条件除外されていた（増配修正を出した会社ほど除外される逆選択）。
+さらに訂正短信による同一決算期の重複が 229 銘柄で前期比較を破壊していた。
+
+**対策（`services/fins_utils.py`）**:
+- `filter_fy_statements(df)`: 実績を読む場面では DocType が
+  `FYFinancialStatements*` のレコードに限定する
+- `dedupe_same_fy(df)`: 同一 (Code, CurFYEn) は DiscDate 最新のみ残す。
+  **バックテストでは as_of フィルタ後に適用**（ロード時に dedup すると
+  未来の訂正が原本を消し point-in-time 性が壊れる）
+- 予想列（FEPS/FDivAnn 等）を読む場面では予想修正レコードが最新情報を
+  持つため、フィルタせず最新レコード（`latest`）から読む（batch_service 方式）
 
 ---
 

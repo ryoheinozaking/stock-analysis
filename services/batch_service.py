@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 
 from screener import calc_rsi, calc_moving_average, calc_avg_volume, calc_signal_score
 from services.split_adjust import normalize_close, normalize_volume
+from services.fins_utils import filter_fy_statements, dedupe_same_fy
 
 _ROOT       = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE_PATH  = os.path.join(_ROOT, "data", "stock_cache.parquet")
@@ -473,19 +474,28 @@ def _compute_metrics(code, prices_df, fins_df, info_row):
         cf = cf.sort_values("DiscDate", ascending=False).reset_index(drop=True)
         latest = cf.iloc[0]  # 最新レコード（Q3/Q2/FY いずれか）
 
-        # FYレコード群（前期比較用）
-        cf_fy = cf[cf["CurPerType"] == "FY"] if "CurPerType" in cf.columns else cf
+        # FYレコード群（前期比較用）: 決算短信（実績）のみ・訂正重複は最新のみ
+        # （CurPerType=='FY' には実績列が空の予想修正レコードも混入するため、
+        #   そのまま使うと ROE/成長率/op_positive が壊れる）
+        if "CurPerType" in cf.columns:
+            cf_fy = dedupe_same_fy(filter_fy_statements(cf)).reset_index(drop=True)
+        else:
+            cf_fy = cf
         latest_fy = cf_fy.iloc[0] if not cf_fy.empty else latest
 
-        # 株式分割対応: 最新開示日後のAdjFactor累積積で分割比率を取得
-        disc_date    = pd.to_datetime(latest.get("DiscDate"), errors="coerce")
-        cp_dates     = pd.to_datetime(cp["Date"], errors="coerce")
-        cp_adj       = pd.to_numeric(cp["AdjFactor"], errors="coerce").fillna(1.0)
-        split_factor = 1.0
-        if pd.notna(disc_date):
-            adj_after = cp_adj[cp_dates > disc_date]
-            if len(adj_after) > 0:
-                split_factor = float(adj_after.prod())
+        # 株式分割対応: 開示日後のAdjFactor累積積で分割比率を取得
+        # （per-share 値は「その値が載っているレコードの開示日」を起点に変換する）
+        cp_dates = pd.to_datetime(cp["Date"], errors="coerce")
+        cp_adj   = pd.to_numeric(cp["AdjFactor"], errors="coerce").fillna(1.0)
+
+        def _sf_after(disc) -> float:
+            d = pd.to_datetime(disc, errors="coerce")
+            if pd.isna(d):
+                return 1.0
+            adj_after = cp_adj[cp_dates > d]
+            return float(adj_after.prod()) if len(adj_after) > 0 else 1.0
+
+        split_factor = _sf_after(latest.get("DiscDate"))
 
         # PER: FEPS（今期予想）→ NxFEPS（来期予想、FY確報済みの場合）→ 実績EPS の順で優先
         # FY確報発表後は FEPS が空になり NxFEPS に来期予想が入る
@@ -498,16 +508,29 @@ def _compute_metrics(code, prices_df, fins_df, info_row):
         elif pd.notna(nxfeps) and nxfeps > 0:
             per_base = nxfeps                # 来期予想EPS（開示時点で分割後ベース）
         elif pd.notna(eps) and eps > 0:
-            per_base = eps * split_factor    # 実績EPS（フォールバック）
+            # 実績EPS（フォールバック）: latest_fy の開示日を起点に分割調整
+            per_base = eps * _sf_after(latest_fy.get("DiscDate"))
         else:
             per_base = np.nan
         per = latest_close / per_base if not np.isnan(per_base) else np.nan
 
-        # PBR
-        eq     = pd.to_numeric(latest.get("Eq"),      errors="coerce")
-        sh_out = pd.to_numeric(latest.get("ShOutFY"), errors="coerce")
-        if pd.notna(sh_out) and split_factor > 0:
-            sh_out = sh_out / split_factor    # 分割後は株数増加
+        # PBR: 純資産・株数は「実績を持つ直近の財務諸表レコード」から取得
+        # （最新レコードが予想修正だと Eq/ShOutFY が空で PBR が壊れるため遡って探す）
+        eq_src = latest
+        if pd.isna(pd.to_numeric(latest.get("Eq"), errors="coerce")) or \
+           pd.isna(pd.to_numeric(latest.get("ShOutFY"), errors="coerce")):
+            stmts = (cf[cf["DocType"].astype(str).str.contains("FinancialStatements", na=False)]
+                     if "DocType" in cf.columns else cf)
+            for _, cand in stmts.iterrows():
+                if pd.notna(pd.to_numeric(cand.get("Eq"), errors="coerce")) and \
+                   pd.notna(pd.to_numeric(cand.get("ShOutFY"), errors="coerce")):
+                    eq_src = cand
+                    break
+        eq     = pd.to_numeric(eq_src.get("Eq"),      errors="coerce")
+        sh_out = pd.to_numeric(eq_src.get("ShOutFY"), errors="coerce")
+        sf_bs  = _sf_after(eq_src.get("DiscDate"))
+        if pd.notna(sh_out) and sf_bs > 0:
+            sh_out = sh_out / sf_bs    # 分割後は株数増加
         bps = eq / sh_out if (pd.notna(eq) and pd.notna(sh_out) and sh_out > 0) else np.nan
         pbr = latest_close / bps if (not np.isnan(bps) and bps > 0) else np.nan
 

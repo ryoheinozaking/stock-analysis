@@ -163,26 +163,24 @@ def _render_scorecard(rank: int, row, ai_stocks: dict, key_prefix: str = "t1", m
         m4.metric("株価",       f"¥{row.close:,.0f}")
         # バリューモードは PBR/PSR を主軸表示、成長株モードは ROE/PER を表示
         if mode == "value":
-            psr_v = getattr(row, "psr", None)
-            psr_s = f"{psr_v:.2f}x" if psr_v is not None and not (isinstance(psr_v, float) and np.isnan(psr_v)) else "N/A"
-            m5.metric("PBR",    f"{row.PBR:.2f}x")
-            m6.metric("PSR",    psr_s)
+            m5.metric("PBR",    _fmt(row.PBR, 2, "x"))
+            m6.metric("PSR",    _fmt(getattr(row, "psr", None), 2, "x"))
         else:
-            m5.metric("ROE",    f"{row.ROE:.1f}%")
-            m6.metric("PER",    f"{row.PER:.1f}x")
+            m5.metric("ROE",    _fmt(row.ROE, 1, "%"))
+            m6.metric("PER",    _fmt(row.PER, 1, "x"))
 
         d1, d2 = st.columns(2)
         with d1:
             if mode == "value":
                 # バリューモードは PER / ROE / 売上成長を補足情報として表示
                 st.caption(
-                    f"PER **{row.PER:.1f}x** ／ ROE **{row.ROE:.1f}%** ／ "
-                    f"売上成長 **{row.rev_growth:.1f}%** ／ 利益成長 **{row.profit_growth:.1f}%**"
+                    f"PER **{_fmt(row.PER, 1, 'x')}** ／ ROE **{_fmt(row.ROE, 1, '%')}** ／ "
+                    f"売上成長 **{_fmt(row.rev_growth, 1, '%')}** ／ 利益成長 **{_fmt(row.profit_growth, 1, '%')}**"
                 )
             else:
                 st.caption(
-                    f"売上成長 **{row.rev_growth:.1f}%** ／ 利益成長 **{row.profit_growth:.1f}%** ／ "
-                    f"PBR **{row.PBR:.1f}x**"
+                    f"売上成長 **{_fmt(row.rev_growth, 1, '%')}** ／ 利益成長 **{_fmt(row.profit_growth, 1, '%')}** ／ "
+                    f"PBR **{_fmt(row.PBR, 1, 'x')}**"
                 )
         with d2:
             detail   = row.tech_detail if isinstance(row.tech_detail, dict) else {}
@@ -300,7 +298,8 @@ def _render_scorecard(rank: int, row, ai_stocks: dict, key_prefix: str = "t1", m
         if detail:
             with st.expander("テクニカル内訳"):
                 st.plotly_chart(
-                    _chart_radar(pd.Series({"company_name": row.company_name}), detail),
+                    _chart_radar(pd.Series({"company_name": row.company_name}),
+                                 detail, mode=mode),
                     use_container_width=True,
                     key=f"radar_{key_prefix}_{rank}_{row.code_4}",
                 )
@@ -347,17 +346,18 @@ def _chart_scatter(top10: pd.DataFrame):
     return fig
 
 
-def _chart_radar(row: pd.Series, detail: dict):
-    """1銘柄のテクニカル内訳レーダー。"""
-    cats    = ["MA", "RSI", "MACD", "出来高", "高値ブレイク"]
-    maxvals = [30, 20, 20, 15, 15]
-    vals    = [
-        detail.get("ma_score",    0),
-        detail.get("rsi_score",   0),
-        detail.get("macd_score",  0),
-        detail.get("vol_score",   0),
-        detail.get("break_score", 0),
-    ]
+def _chart_radar(row: pd.Series, detail: dict, mode: str = "growth"):
+    """1銘柄のテクニカル内訳レーダー。配点はモードごとに異なる。"""
+    if mode == "value":
+        cats    = ["MA200", "RSI", "MACD", "需給", "高値ブレイク"]
+        maxvals = [30, 20, 20, 15, 15]
+        keys    = ["ma_score", "rsi_score", "macd_score", "vol_score", "break_score"]
+    else:
+        cats    = ["SEPA", "MA", "RSI", "MACD", "出来高", "高値ブレイク"]
+        maxvals = [30, 20, 15, 15, 10, 10]
+        keys    = ["sepa_score", "ma_score", "rsi_score", "macd_score",
+                   "vol_score", "break_score"]
+    vals = [detail.get(k, 0) or 0 for k in keys]
     pct = [v / m * 100 for v, m in zip(vals, maxvals)]
 
     fig = go.Figure(go.Scatterpolar(
@@ -625,7 +625,8 @@ with st.sidebar:
     )
     use_claude = st.toggle("Claude AI分析を実行する", value=True)
     if use_claude:
-        st.caption("上位10銘柄を Sonnet 4.6 で分析します（1回あたり数十円）")
+        _n_ai = 20 if mode == "value" else 10
+        st.caption(f"上位{_n_ai}銘柄を Sonnet 4.6 で分析します（1回あたり数十円〜百円程度）")
     run_btn = st.button("🚀 パイプライン実行", use_container_width=True, type="primary")
 
     st.markdown("---")
@@ -645,15 +646,15 @@ with st.sidebar:
   - MA200乖離 30pt / RSI 20pt（30-50）
   - MACD 20pt / 需給 15pt / 高値ブレイク 15pt
 - **Top20 集中**（バリューモード）
-  - 診断: Top10〜20 が α 最大、Top50 以上は TOPIX に近づく
+  - Top-N は total_score 純順位で選定（バックテストと同一基準）
 - **BUYシグナル条件**
   - 総合≥60 / テクニカル≥55 / RSI 30-50
 - **利確目標**
   - 第1目標 +35% / 第2目標 +40%
   - 損切り -15%（or MA25の高い方）
-- **⚠️ 期待値**
-  - backtest α +18% / 勝率 86% は**生存バイアス込み**で楽観値
-  - 実運用での realistic α は +10〜15%/年、勝率 70-75% を想定
+- **⚠️ 期待値**（2026-06-12 再計測: fwd250日×52snap）
+  - Top20 α(TPX) +9.4% / 勝率 76.5%
+  - 生存バイアス残存。実運用想定 α +5〜10%/年、勝率 70% 前後
 """)
     else:
         st.markdown("""
@@ -785,7 +786,7 @@ ai_stocks = {s["code"]: s for s in ai.get("stocks", [])} if (ai and not ai.get("
 tab1, tab2 = st.tabs(["スコア TOP10", "SEPA2絞り込み TOP10"])
 
 with tab1:
-    st.subheader("スコアランキング TOP10")
+    st.subheader(f"スコアランキング TOP{len(top10)}")
     for rank, row in enumerate(top10.itertuples(), 1):
         _render_scorecard(rank, row, ai_stocks, mode=cached_mode)
 
@@ -870,10 +871,10 @@ def _build_claude_text(top10: pd.DataFrame, ai: dict, market: dict, mode: str = 
     strategy_note = (
         "【戦略】 Rank IC 診断ベースの PBR-heavy Deep Value 戦略\n"
         "  - ハードフィルタ: PBR≤1.5 / PER≤25 / 自己資本比率≥40% / 時価総額≥100億 / 売上成長≥3% / 営業黒字\n"
-        "  - **ROE 制約は撤廃**（IC=-0.027 で逆効果と判明、低ROE×低PBR の Deep Value が最大α源）\n"
+        "  - **ROE 制約は撤廃**（逆効果と判明、低ROE×低PBR の Deep Value が最大α源）\n"
         "  - **シクリカル業種除外も撤廃**（過剰最適化と判明）\n"
-        "  - 月次37スナップショット backtest で Top20 α=+18%、勝率86%（生存バイアス込みの楽観値）\n"
-        "  - 実運用想定 α=+10〜15%/年、勝率 70-75%"
+        "  - 月次52スナップショット backtest（2026-06-12 再計測, fwd250日）で Top20 α(TPX)=+9.4%、勝率76.5%\n"
+        "  - 実運用想定 α=+5〜10%/年、勝率 70% 前後（生存バイアス残存のため割引）"
         if mode == "value" else
         "【戦略】 成長株モード（Growth>10% / ROE>15% / equity_ratio>30% / 営業黒字）"
     )
@@ -1050,7 +1051,7 @@ def _build_claude_text(top10: pd.DataFrame, ai: dict, market: dict, mode: str = 
             "⑥ 今の市場環境（2026年4月）を踏まえたバリュー投資戦略コメント",
             "",
             "**スコアリング哲学**: PBR/PSR/PER のみで採点。ROE や成長率は無視（実証で予測力なしと判明）。",
-            "**注意**: backtest 数値は生存バイアスで楽観値。実運用想定 α=+10〜15%、勝率 70-75%。",
+            "**注意**: backtest 数値は生存バイアスで楽観値。実運用想定 α=+5〜10%/年、勝率 70% 前後。",
             "個別銘柄では-30%級の損も覚悟すべし。",
         ]
     else:

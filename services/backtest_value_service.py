@@ -24,6 +24,7 @@ from services.pipeline_service import (
     calc_funda_score, calc_tech_scores, calc_total_score,
 )
 from services.split_adjust import split_factor_between
+from services.fins_utils import dedupe_same_fy
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -55,6 +56,10 @@ def _build_atdate_snapshot(
     - EPS/BPS: 開示時点(disc_date)のスケールから as_of 時点のスケールに変換
       （disc_date と as_of の間に分割があれば split_factor を乗算）
     """
+    # 同一決算期の訂正短信重複を最新開示のみに絞る
+    # （as_of でのフィルタ後に dedup することで point-in-time 性を維持）
+    fins_past = dedupe_same_fy(fins_past)
+
     # 直近終値（各銘柄ごとに as_of 以前で最新の C）
     # AdjC は J-Quants 取得タイミング次第でスケール混在のため使わない
     p = prices_past.sort_values(["Code", "Date"])
