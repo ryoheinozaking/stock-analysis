@@ -783,14 +783,8 @@ st.divider()
 # ── TOP10 スコアカード ─────────────────────────────────────────────────
 ai_stocks = {s["code"]: s for s in ai.get("stocks", [])} if (ai and not ai.get("error")) else {}
 
-tab1, tab2 = st.tabs(["スコア TOP10", "SEPA2絞り込み TOP10"])
-
-with tab1:
-    st.subheader(f"スコアランキング TOP{len(top10)}")
-    for rank, row in enumerate(top10.itertuples(), 1):
-        _render_scorecard(rank, row, ai_stocks, mode=cached_mode)
-
-with tab2:
+def _render_sepa2_funnel(scored, ai_stocks, cached_mode):
+    """成長株モード: SEPA Stage2 絞り込み + 飛躍/深層 動線（従来挙動）。"""
     if not scored.empty and "sepa_stage" in scored.columns:
         sepa2_df = (
             scored[scored["sepa_stage"] == 2]
@@ -803,38 +797,107 @@ with tab2:
 
     if sepa2_df.empty:
         st.info("SEPA Stage2条件を満たす銘柄がありませんでした。")
+        return
+
+    sepa2_count = int((scored["sepa_stage"] == 2).sum()) if not scored.empty else 0
+    st.subheader(f"SEPA2絞り込み TOP10（全{sepa2_count}件中）")
+    st.caption("フィルタ通過銘柄のうち SEPA Stage2 を満たす銘柄をスコア順に表示。")
+    # 二刀流への動線: 優先精査(BUY) を「次にかけるべき分析」として目立たせて提示
+    _skill = "飛躍分析" if cached_mode == "growth" else "深層分析"
+    _priority = (sepa2_df[sepa2_df["signal"] == "BUY"]
+                 if "signal" in sepa2_df.columns else sepa2_df.head(0))
+    if len(_priority) > 0:
+        _lines = [
+            f"### → 次にかけるべき分析（{_skill}推奨）",
+            "パイプラインは**発掘**、最終判定は**二刀流**で。過熱していない優先精査（Stage2）を最優先候補として提示:",
+        ]
+        for _, _r in _priority.head(5).iterrows():
+            _lines.append(
+                f"- **`{_skill} {_r['code_4']}`** — {_r['company_name']}"
+                f"（総合 {_r['total_score']:.0f} / Stage2 / 優先精査）"
+            )
+        _ref = sepa2_df[sepa2_df["signal"] != "BUY"].head(3)
+        if len(_ref) > 0:
+            _lines.append(
+                "\n参考（Stage2 だが過熱等で監視中）: "
+                + " / ".join(
+                    f"{_r['code_4']} {_r['company_name']}"
+                    for _, _r in _ref.iterrows()
+                )
+            )
+        st.success("\n".join(_lines))
     else:
-        sepa2_count = int((scored["sepa_stage"] == 2).sum()) if not scored.empty else 0
-        st.subheader(f"SEPA2絞り込み TOP10（全{sepa2_count}件中）")
-        st.caption("フィルタ通過銘柄のうち SEPA Stage2 を満たす銘柄をスコア順に表示。")
-        # 二刀流への動線: 優先精査(BUY) を「次にかけるべき分析」として目立たせて提示
-        _skill = "飛躍分析" if cached_mode == "growth" else "深層分析"
-        _priority = (sepa2_df[sepa2_df["signal"] == "BUY"]
-                     if "signal" in sepa2_df.columns else sepa2_df.head(0))
-        if len(_priority) > 0:
-            _lines = [
-                f"### → 次にかけるべき分析（{_skill}推奨）",
-                "パイプラインは**発掘**、最終判定は**二刀流**で。過熱していない優先精査（Stage2）を最優先候補として提示:",
-            ]
-            for _, _r in _priority.head(5).iterrows():
-                _lines.append(
-                    f"- **`{_skill} {_r['code_4']}`** — {_r['company_name']}"
-                    f"（総合 {_r['total_score']:.0f} / Stage2 / 優先精査）"
+        st.info(f"現在、優先精査（過熱していない × Stage2）の {_skill} 推奨候補はありません。")
+    for rank, row in enumerate(sepa2_df.itertuples(), 1):
+        _render_scorecard(rank, row, ai_stocks, key_prefix="t2", mode=cached_mode)
+
+
+def _render_value_discovery(scored, ai_stocks):
+    """バリューモード: 経営変化（活動家/増配/配当性向）× RSI<=60 の深層分析発掘網。"""
+    from services.pipeline_service import select_value_discovery_candidates
+
+    main_df, ref_df = select_value_discovery_candidates(scored)
+
+    if main_df.empty and ref_df.empty:
+        st.info("経営変化シグナル（活動家保有/増配/配当性向25-70%）を持つ"
+                "出遅れ（RSI≤60）銘柄が見つかりませんでした。")
+        return
+
+    st.subheader(f"経営変化×出遅れ 発掘（{len(main_df)}件）")
+    st.caption("フィルタ通過全銘柄から「経営変化シグナルあり × 過熱していない（RSI≤60）」を"
+               "スコア順に抽出。バリュートラップ判定を深層分析に委ねる発掘網。")
+
+    def _sig_labels(r):
+        labels = []
+        if bool(getattr(r, "activist", False)):
+            labels.append("アクティビスト保有")
+        if int(getattr(r, "div_trend", 0) or 0) >= 2:
+            labels.append("2期連続増配")
+        elif int(getattr(r, "div_trend", 0) or 0) == 1:
+            labels.append("増配")
+        pr = getattr(r, "payout_ratio", None)
+        if pr is not None and pd.notna(pr) and 25 <= pr <= 70:
+            labels.append(f"配当性向{pr:.0f}%")
+        return "、".join(labels) if labels else "経営変化"
+
+    if not main_df.empty:
+        _lines = [
+            "### → 次にかけるべき分析（深層分析推奨）",
+            "パイプラインは**発掘**、最終判定は**二刀流**で。割安×経営の意志を持つ出遅れ銘柄を"
+            "バリュートラップ判定の最優先候補として提示:",
+        ]
+        for _r in main_df.head(5).itertuples():
+            _lines.append(
+                f"- **`深層分析 {_r.code_4}`** — {_r.company_name}"
+                f"（総合 {_r.total_score:.0f} / {_sig_labels(_r)}）"
+            )
+        if not ref_df.empty:
+            _lines.append(
+                "\n参考（経営変化ありだが過熱気味・待ち）: "
+                + " / ".join(
+                    f"{_r.code_4} {_r.company_name}"
+                    for _r in ref_df.itertuples()
                 )
-            _ref = sepa2_df[sepa2_df["signal"] != "BUY"].head(3)
-            if len(_ref) > 0:
-                _lines.append(
-                    "\n参考（Stage2 だが過熱等で監視中）: "
-                    + " / ".join(
-                        f"{_r['code_4']} {_r['company_name']}"
-                        for _, _r in _ref.iterrows()
-                    )
-                )
-            st.success("\n".join(_lines))
-        else:
-            st.info(f"現在、優先精査（過熱していない × Stage2）の {_skill} 推奨候補はありません。")
-        for rank, row in enumerate(sepa2_df.itertuples(), 1):
-            _render_scorecard(rank, row, ai_stocks, key_prefix="t2", mode=cached_mode)
+            )
+        st.success("\n".join(_lines))
+
+    for rank, row in enumerate(main_df.itertuples(), 1):
+        _render_scorecard(rank, row, ai_stocks, key_prefix="t2v", mode="value")
+
+
+_tab2_label = "経営変化×出遅れ 発掘" if cached_mode == "value" else "SEPA2絞り込み TOP10"
+tab1, tab2 = st.tabs(["スコア TOP10", _tab2_label])
+
+with tab1:
+    st.subheader(f"スコアランキング TOP{len(top10)}")
+    for rank, row in enumerate(top10.itertuples(), 1):
+        _render_scorecard(rank, row, ai_stocks, mode=cached_mode)
+
+with tab2:
+    if cached_mode == "value":
+        _render_value_discovery(scored, ai_stocks)
+    else:
+        _render_sepa2_funnel(scored, ai_stocks, cached_mode)
 
 st.divider()
 
