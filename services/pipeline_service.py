@@ -365,6 +365,7 @@ def calc_funda_score(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
         # （EDINET DB の get_activist_positions バルク結果を保存）
         if "code_4" in df.columns:
             governance = calc_governance_score_for_df(df, code_4_col="code_4")
+            df["activist"] = governance > 0          # 発掘動線フィルタ用の列（テスト可能化）
             score = score + governance
 
         # 増配トレンドボーナス（+5pt/1期, +10pt/2期連続増配）
@@ -676,6 +677,70 @@ def select_top_candidates(scored: pd.DataFrame, top_n: int) -> pd.DataFrame:
     return (scored.sort_values("total_score", ascending=False)
                   .head(top_n)
                   .reset_index(drop=True))
+
+
+def _extract_rsi(detail) -> float:
+    """tech_detail dict から RSI を取り出す（無ければ NaN）。"""
+    if isinstance(detail, dict):
+        v = detail.get("rsi")
+        return float(v) if v is not None else np.nan
+    return np.nan
+
+
+def select_value_discovery_candidates(
+    scored: pd.DataFrame,
+    top_n: int = 10,
+    ref_n: int = 3,
+    rsi_max: float = 60.0,
+):
+    """バリュー深層分析動線の「経営変化 × 出遅れ」候補を返す。
+
+    経営変化シグナル（OR）= activist 保有 / div_trend>=1（増配）/
+    payout_ratio in [25,70]（健全な還元姿勢）。
+    過熱フィルタ = RSI<=rsi_max（RSI 欠損は除外しない＝main に含める）。
+
+    Returns:
+        (main_df, reference_df)
+        main      : 経営変化あり AND (RSI<=rsi_max OR RSI欠損)、total_score 降順 top_n
+        reference : 経営変化あり AND RSI>rsi_max（過熱気味で待ち）、total_score 降順 ref_n
+    """
+    if scored is None or scored.empty:
+        empty = scored.iloc[0:0] if scored is not None else pd.DataFrame()
+        return empty, empty
+
+    df = scored.copy()
+    idx = df.index
+
+    activist = (df["activist"].fillna(False).astype(bool)
+                if "activist" in df.columns else pd.Series(False, index=idx))
+    div_up = (pd.to_numeric(df["div_trend"], errors="coerce").fillna(0) >= 1
+              if "div_trend" in df.columns else pd.Series(False, index=idx))
+    if "payout_ratio" in df.columns:
+        payout = pd.to_numeric(df["payout_ratio"], errors="coerce")
+        payout_ok = payout.between(25, 70).fillna(False)
+    else:
+        payout_ok = pd.Series(False, index=idx)
+
+    gov = activist | div_up | payout_ok
+
+    # RSI: 専用列があれば優先、無ければ tech_detail から取り出す
+    if "rsi" in df.columns:
+        rsi = pd.to_numeric(df["rsi"], errors="coerce")
+    elif "tech_detail" in df.columns:
+        rsi = pd.to_numeric(df["tech_detail"].apply(_extract_rsi), errors="coerce")
+    else:
+        rsi = pd.Series(np.nan, index=idx)
+
+    not_overheated = rsi.isna() | (rsi <= rsi_max)
+
+    cand = df[gov]
+    main = (cand[not_overheated[gov]]
+            .sort_values("total_score", ascending=False)
+            .head(top_n).reset_index(drop=True))
+    ref = (cand[~not_overheated[gov]]
+           .sort_values("total_score", ascending=False)
+           .head(ref_n).reset_index(drop=True))
+    return main, ref
 
 
 # ════════════════════════════════════════════════════════════════════════
