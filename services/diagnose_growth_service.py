@@ -274,18 +274,8 @@ def run_growth_snapshot(
 #  Rank IC 計算
 # ════════════════════════════════════════════════════════════════════════
 
-def _spearmanr(x: np.ndarray, y: np.ndarray) -> float:
-    """NaN を除外した Spearman 相関係数（scipy 不要）。有効サンプル < 5 は NaN。"""
-    mask = ~(np.isnan(x) | np.isnan(y))
-    if mask.sum() < 5:
-        return np.nan
-    x_, y_ = x[mask], y[mask]
-    n  = len(x_)
-    xr = pd.Series(x_).rank().values
-    yr = pd.Series(y_).rank().values
-    d2 = float(np.sum((xr - yr) ** 2))
-    denom = n * (n ** 2 - 1)
-    return float(1.0 - 6.0 * d2 / denom) if denom > 0 else np.nan
+# Spearman 順位相関は共有 util に集約（タイ対応。旧 d² 簡易公式はタイで |IC| 過大評価）。
+from services.stats_utils import spearmanr as _spearmanr
 
 
 def calc_rank_ic(
