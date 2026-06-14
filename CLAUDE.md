@@ -250,9 +250,13 @@ Claude Code の `deep-analysis-jp` スキルが使う J-Quants データ取得�
 - 撤廃: ROE / rev_growth / profit_growth / eps_growth / equity_ratio（IC≈0 または逆効果）
 - ボーナス（経営変化シグナル / "PBR 改善 = 利益改善 × 経営の意志" の後者を捕捉）:
   - **アクティビスト保有 +10pt**（2026-04-30 追加 / EDINET DB MCP）
-  - V字転換 +15pt / 2期連続増益 +10pt / 1期増益 +5pt
-  - 2期連続増配 +10pt / 1期増配 +5pt
-  - 配当性向 40-70% +10pt / 25-40% +5pt（2026-04-30 段階評価に改訂）
+  - 2期連続増益 +10pt / 1期増益 +5pt（op_trend）
+  - 2期連続増配 +10pt / 1期増配 +5pt（div_trend）
+  - **【2026-06-14 撤廃】V字転換(+15pt) と 配当性向(40-70%+10/25-40%+5) は funda_score から除外**。
+    分解診断（成分別IC + 1個ずつ抜く検証）で、Top20 では両者が逆効果（より割安な良銘柄を
+    押しのける）と 250日先/60日先の両期間で確認。`bonus_turnaround`/`bonus_payout` 列は
+    監視用に計算を残すが `bonus_total`（=funda_score 加算分）には含めない。
+    → Top20 α: +9.4% → 約+11.2%（fwd250, in-sample）。診断 CSV: `data/diagnose_value/bonus_*.csv`
 
 ### 経営変化スコア（governance_score.py）
 **【2026-04-30 新設】** ChatGPT-5 提案フレームワークに基づく経営の意志の数値化。
@@ -405,6 +409,31 @@ score += max(0, 10 - abs(rsi - 50) / 5)  # RSI: 50に近いほど高得点
 - ShOutFY → 末尾日スケールに割り戻し（× shares で逆方向）
 
 CLAUDE.md/コードに散らばっていた「権利修正済: AdjO/H/L/C/Vo を使用」の記述は **単発スナップショット利用時のみ妥当**。長期蓄積データには当てはまらない。
+
+#### ⚠️ 予想 EPS/配当の分割スケール二重調整の罠（2026-06-13 修正）
+
+**「開示日 < 分割日 → 予想は分割前ベース → split_factor を掛ける」という日付ルールは
+予想 per-share 値（FEPS/FDivAnn）には使えない。** 分割発表後・効力前に開示された
+通期予想は、会社により **分割後ベースで開示される**ことがある（実績 EPS と違い、予想は
+将来の分割を織り込んで開示してよいため）。
+
+実例: **6227 ＡＩメカテック**は 1:3 分割（効力 2026-03-30）の発表後、2026-02-13 の
+2Q 短信で通期予想 EPS=163.93 を **分割後ベース**で開示（検算: 予想NP 3,078百万円 ÷
+分割後株数 18.8M ≈ 163）。日付ルールで ÷3 すると予想 PER が 47.9 → 143.7 と 3 倍過大になる。
+直近1年に分割があった 289 銘柄中 5 銘柄が同症状だった（いずれも分割後ベース開示）。
+
+**対策**: `services/split_adjust.forecast_per_share_multiplier(per_share, aggregate, shares, split_factor)`
+で **FNP/ShOutFY との突合**でスケールを判定してから乗数を決める:
+- `FEPS ≈ FNP/shares` → 分割前ベース → 乗数 = split_factor
+- `FEPS ≈ FNP/shares × split_factor` → 分割後ベース → 乗数 = 1.0（調整しない）
+- 判定不能（分割なし / FNP・shares 欠損 / 両候補から乖離）→ split_factor にフォールバック
+
+予想 EPS と予想配当は同一レコード＝同一ベースなので、EPS から得た乗数を配当にも流用する。
+適用箇所: `batch_service._compute_metrics`（stock_cache の PER/利回り）と
+`deep_analysis_helper.compute_valuation_estimate`（深層分析の予想 PER/利回り）。
+**実績 EPS/DivAnn の異時点比較（pipeline_service の成長率・増配トレンド）は従来どおり
+split_factor 適用で正しい**（完了済み期の実績は遡及修正されないため）。回帰テストは
+`tests/test_forecast_split_scale.py`。
 
 ### fins/summary 主要カラム
 - 実績: `Sales, OP, NP, EPS, BPS, Eq, TA, CFO`（単位: **円**。EPS/BPS は円/株）

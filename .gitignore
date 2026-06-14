@@ -25,11 +25,20 @@ data/backtest_prices/
 data/fins_cache/
 data/deep_analysis/
 data/edinetdb_cache/
+data/da_cache/
+data/diagnose_value/
+data/diagnose_growth/
 
 # バックアップ・アーカイブ
 backup/
 archive/
 *.bak
+
+# 一時・スクラッチ（ログ・使い捨てスクリプト・退避ファイル）
+.tmp/
+
+# バイナリツール（j-quants CLI 等。13MB のためリポジトリに入れない）
+bin/
 
 # ローカル起動スクリプト
 start_app.bat
@@ -37,6 +46,9 @@ start_app.bat
 # Claude Code / Superpowers
 .claude/
 .superpowers/
+
+# Codex（project-level config に API キーが平文で入る可能性あり）
+.codex/
 
 # ログ
 streamlit.log
