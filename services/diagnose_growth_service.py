@@ -224,10 +224,14 @@ def run_growth_snapshot(
     scored = calc_funda_score(filtered, mode="growth")
     # 過去時点の SEPA stage を計算して付与（calc_tech_scores が参照）。
     # topix は簡易省略（RS 条件のみ欠落、stage 大枠は live と一致）。
+    # 対象銘柄分だけ一度グループ化（銘柄ごとに全価格表を boolean mask すると
+    # 診断が O(銘柄数×価格行数) になり、同時実行時に重くて落ちる原因になっていた）。
     _stages = []
+    _sub = prices_past[prices_past["Code"].isin(set(scored["code"]))]
+    _pg = {c: g for c, g in _sub.groupby("Code")}
     for _code in scored["code"]:
-        _cp = prices_past[prices_past["Code"] == _code]
-        if len(_cp) >= 200:
+        _cp = _pg.get(_code)
+        if _cp is not None and len(_cp) >= 200:
             _stages.append(_calc_sepa(normalize_close(_cp.sort_values("Date")), None).get("sepa_stage", 0))
         else:
             _stages.append(0)
