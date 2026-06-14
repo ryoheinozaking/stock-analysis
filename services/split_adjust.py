@@ -143,6 +143,53 @@ def split_factor_between(
     return float(af[mask].prod())
 
 
+def forecast_per_share_multiplier(
+    per_share,
+    aggregate,
+    shares,
+    split_factor: float,
+    *,
+    max_rel_err: float = 0.25,
+) -> float:
+    """予想 per-share 値（FEPS / FDivAnn 等）を「開示スケール → 最新日スケール」に
+    変換するための乗数を返す。
+
+    【背景】分割発表後・効力前に開示された通期予想は、会社により
+    分割前ベース・分割後ベースのどちらでも開示され得る（例: 6227 ＡＩメカテックは
+    2026-03-30 効力の 1:3 分割を、2026-02-13 の 2Q 短信で「分割後ベース」の
+    予想 EPS=163.93 として開示）。「開示日 < 分割日 → 分割前ベース」という日付
+    ルールは後者を誤判定し、split_factor を二重に掛けて PER を 3 倍過大にする。
+
+    そこで予想純利益 ``aggregate``（FNP）÷ 期末発行済株式数 ``shares``（ShOutFY）と
+    突合してスケールを判定する:
+      - ``per_share`` ≈ aggregate/shares              → 分割前ベース → 乗数 = split_factor
+      - ``per_share`` ≈ aggregate/shares × split_factor → 分割後ベース → 乗数 = 1.0
+
+    判定不能な場合（split_factor==1.0 / per_share・aggregate・shares 欠損 /
+    両候補から max_rel_err 超乖離）は従来の日付ルール（分割前前提）に従い
+    ``split_factor`` を返す。1 レコード内の予想 per-share 値（EPS と DPS）は
+    同一ベースで開示されるため、EPS から得た乗数を DPS にも流用してよい。
+    """
+    sf = float(split_factor) if split_factor is not None and not pd.isna(split_factor) else 1.0
+    # 分割なし or 予想値が無い → 判定不要（呼び出し側は per_share 欠損時この戻り値を使わない）
+    if sf == 1.0 or per_share is None or pd.isna(per_share) or float(per_share) == 0.0:
+        return sf
+    # アンカー（FNP/shares）が無ければ従来動作にフォールバック
+    if aggregate is None or pd.isna(aggregate) or shares is None or pd.isna(shares) or float(shares) == 0.0:
+        return sf
+    cand_pre = float(aggregate) / float(shares)   # 分割前 EPS 候補
+    if cand_pre == 0.0:
+        return sf
+    cand_post = cand_pre * sf                       # 分割後 EPS 候補
+    ps = float(per_share)
+    d_pre = abs(ps / cand_pre - 1.0)
+    d_post = abs(ps / cand_post - 1.0) if cand_post != 0.0 else float("inf")
+    # どちらの候補からも大きく外れる（連単不一致・株数が古い等）→ 信頼できずフォールバック
+    if min(d_pre, d_post) > max_rel_err:
+        return sf
+    return 1.0 if d_post < d_pre else sf
+
+
 def adjust_per_share(value: float, split_factor: float) -> float:
     """per-share 値（EPS, BPS, DPS）に分割係数を適用してスケール変換。"""
     if value is None or pd.isna(value) or pd.isna(split_factor):

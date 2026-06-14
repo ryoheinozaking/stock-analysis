@@ -17,7 +17,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 
 from screener import calc_rsi, calc_moving_average, calc_avg_volume, calc_signal_score
-from services.split_adjust import normalize_close, normalize_volume
+from services.split_adjust import normalize_close, normalize_volume, forecast_per_share_multiplier
 from services.fins_utils import filter_fy_statements, dedupe_same_fy
 
 _ROOT       = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -503,8 +503,14 @@ def _compute_metrics(code, prices_df, fins_df, info_row):
         feps   = pd.to_numeric(latest.get("FEPS"),   errors="coerce")
         nxfeps = pd.to_numeric(latest.get("NxFEPS"), errors="coerce")
         eps    = pd.to_numeric(latest_fy.get("EPS"),  errors="coerce")
+        # 予想 per-share 値の分割スケール判定（FNP/ShOutFY と突合）。
+        # 「開示日<分割日 → 必ず分割前」の一律ルールは、分割発表後・効力前に
+        # 分割後ベースで予想を開示する会社（例: 6227）を誤判定し PER を 3 倍にする。
+        fnp_latest = pd.to_numeric(latest.get("FNP"),     errors="coerce")
+        sh_latest  = pd.to_numeric(latest.get("ShOutFY"), errors="coerce")
+        fwd_mult = forecast_per_share_multiplier(feps, fnp_latest, sh_latest, split_factor)
         if pd.notna(feps) and feps > 0:
-            per_base = feps * split_factor   # 四半期予想EPS（分割調整あり）
+            per_base = feps * fwd_mult       # 今期予想EPS（開示スケールを判定して調整）
         elif pd.notna(nxfeps) and nxfeps > 0:
             per_base = nxfeps                # 来期予想EPS（開示時点で分割後ベース）
         elif pd.notna(eps) and eps > 0:
@@ -554,11 +560,13 @@ def _compute_metrics(code, prices_df, fins_df, info_row):
         nxfdivann = pd.to_numeric(latest.get("NxFDivAnn"), errors="coerce")
         divann    = pd.to_numeric(latest.get("DivAnn"),    errors="coerce")
         if pd.notna(fdivann) and fdivann > 0:
-            div_ann = fdivann * split_factor
+            # 予想配当は予想EPSと同一レコード=同一ベース。EPS から得た fwd_mult を流用
+            # （FEPS 欠損で判定不能なら fwd_mult=split_factor にフォールバック済み）
+            div_ann = fdivann * fwd_mult
         elif pd.notna(nxfdivann) and nxfdivann > 0:
             div_ann = nxfdivann   # 既に分割後ベース
         elif pd.notna(divann):
-            div_ann = divann * split_factor
+            div_ann = divann * split_factor   # 実績配当は開示時点の分割前ベース
         else:
             div_ann = np.nan
         div_yield = div_ann / latest_close * 100 if (not np.isnan(div_ann) and latest_close > 0) else np.nan
