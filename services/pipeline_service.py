@@ -356,47 +356,52 @@ def calc_funda_score(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
 
     if mode == "value":
         # ── 経営変化シグナル群（バリュー戦略の真の α 源）
-        # 「PBR 改善 = 利益改善 × 経営の意志」という前提で、後者を捕捉する
+        # 「PBR 改善 = 利益改善 × 経営の意志」の後者を捕捉する。
+        # 各ボーナスを列として保存してから合算する（funda_score 値は不変。
+        # #1 分解診断で各成分の IC / leave-one-out α を測るための露出）。
 
-        # アクティビスト保有ボーナス（+10pt）
+        # 全ボーナス列を 0 初期化（code_4 や各信号列が無くても bonus_total が成立）
+        df["bonus_activist"]   = 0.0
+        df["activist"]         = False
+        df["bonus_div"]        = 0.0
+        df["bonus_op"]         = 0.0
+        df["bonus_turnaround"] = 0.0
+        df["bonus_payout"]     = 0.0
+        df["payout_in_band"]   = 0.0
+
+        # アクティビスト保有（+10pt / look-ahead: governance_activists.json は現在SS）
         # 旧村上ファンド・ストラテジックキャピタル・3D・エフィッシモ等の
         # 物言う株主保有銘柄は「外圧で経営が変わらざるを得ない」状況。
-        # MVP 実装。データソース: data/governance_activists.json
-        # （EDINET DB の get_activist_positions バルク結果を保存）
         if "code_4" in df.columns:
             governance = calc_governance_score_for_df(df, code_4_col="code_4")
-            df["activist"] = governance > 0          # 発掘動線フィルタ用の列（テスト可能化）
-            score = score + governance
+            df["activist"]       = governance > 0    # 発掘動線フィルタ用
+            df["bonus_activist"] = governance.astype(float)
 
-        # 増配トレンドボーナス（+5pt/1期, +10pt/2期連続増配）
-        # → 株主還元方針の継続性シグナル
+        # 増配トレンド（+5pt/1期, +10pt/2期連続増配）= 株主還元方針の継続性
         if "div_trend" in df.columns:
-            score += df["div_trend"].fillna(0).clip(0, 2) * 5.0
+            df["bonus_div"] = df["div_trend"].fillna(0).clip(0, 2) * 5.0
 
-        # 営業利益トレンドボーナス（+5pt/1期増, +10pt/2期連続増）
+        # 営業益トレンド（+5pt/1期増, +10pt/2期連続増）
         if "op_trend" in df.columns:
-            score += df["op_trend"].fillna(0).clip(0, 2) * 5.0
+            df["bonus_op"] = df["op_trend"].fillna(0).clip(0, 2) * 5.0
 
-        # V字転換ボーナス（前期減益→今期回復: +15pt）
-        # 2期連続増益（+10pt）より重く評価 = 最も上昇しやすいゾーン
+        # V字転換（前期減益→今期回復: +15pt）。2期連続増益より重く評価
         if "op_turnaround" in df.columns:
-            score += df["op_turnaround"].eq(True).astype(float) * 15.0
+            df["bonus_turnaround"] = df["op_turnaround"].eq(True).astype(float) * 15.0
 
-        # 配当性向ボーナス（段階評価）
-        # 【2026-04-30 改訂】従来は 0-70% で一律 +5pt の二値判定だったが、
-        # 「株主還元の積極性」を正確に捉えるため段階評価に変更。
-        # ChatGPT-5 の「経営変化スコア」フレームワーク参考。
-        #   - 高配当性向 (40-70%):  積極的な還元姿勢          → +10pt
-        #   - 中配当性向 (25-40%):  健全な還元水準            → +5pt
-        #   - 低配当性向 (0-25%):   還元不足 or 内部留保偏重   → 0pt
-        #   - 異常高配当 (>70%):    持続性に疑問              → 0pt
+        # 配当性向ボーナス（段階評価。ChatGPT-5「経営変化スコア」参考）
+        #   - 高配当性向 (40-70%):  積極的還元         → +10pt
+        #   - 中配当性向 (25-40%):  健全な還元水準     → +5pt
+        #   - 低 (0-25%) / 異常高 (>70%):  持続性疑問  → 0pt
         if "payout_ratio" in df.columns:
             pr = df["payout_ratio"].fillna(-1)
-            # 40-70%: +10pt
-            score += ((pr >= 40) & (pr <= 70)).astype(float) * 10.0
-            # 25-40%: +5pt
-            score += ((pr >= 25) & (pr < 40)).astype(float) * 5.0
-            # 0-25% および >70% は 0pt
+            df["bonus_payout"] = (((pr >= 40) & (pr <= 70)).astype(float) * 10.0
+                                  + ((pr >= 25) & (pr < 40)).astype(float) * 5.0)
+            df["payout_in_band"] = ((pr >= 25) & (pr <= 70)).astype(float)
+
+        df["bonus_total"] = (df["bonus_activist"] + df["bonus_div"] + df["bonus_op"]
+                             + df["bonus_turnaround"] + df["bonus_payout"])
+        score = score + df["bonus_total"]
 
     df["funda_score"] = score.round(2)
     return df
