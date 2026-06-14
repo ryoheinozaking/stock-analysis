@@ -30,14 +30,19 @@ def test_bonus_component_columns_exist():
         assert col in df.columns
 
 
-def test_bonus_total_is_sum_of_components():
+def test_bonus_total_excludes_turnaround_and_payout():
+    # 2026-06-14 撤廃: V字・配当性向は funda_score に加算しない（列は監視用に残す）。
+    # bonus_total = activist + div + op のみ。
     df = _score([_vrow("1000", 0.8, 1e11, 2e11,
                         div_trend=2, op_trend=1, op_turnaround=True,
                         payout_ratio=50.0)])
     r = df.iloc[0]
-    assert r["bonus_total"] == (r["bonus_activist"] + r["bonus_div"]
-                                + r["bonus_op"] + r["bonus_turnaround"]
-                                + r["bonus_payout"])
+    assert r["bonus_turnaround"] == 15.0   # 列は監視用に計算される
+    assert r["bonus_payout"] == 10.0
+    assert r["bonus_div"] == 10.0
+    assert r["bonus_op"] == 5.0
+    # bonus_total は activist+div+op のみ（V字・配当性向は除外）
+    assert r["bonus_total"] == r["bonus_activist"] + r["bonus_div"] + r["bonus_op"]
 
 
 def test_component_points_match_definition():
@@ -57,14 +62,29 @@ def test_component_points_match_definition():
     assert df.loc["1004", "payout_in_band"] == 0.0
 
 
-def test_funda_score_unchanged_equals_core_plus_bonus_total():
-    # funda_score == コア percentile 部分 + bonus_total。
-    # bonus_total を引いた値が、ボーナス無し同条件行の funda_score と一致することで不変を確認。
+def test_funda_score_is_core_plus_bonus_total_only():
+    # funda_score == コア percentile + bonus_total。コアが同一の行群では
+    # funda_score の差は bonus_total の差だけになる（V字・配当性向は bonus_total に
+    # 入らないので funda_score を動かさない）。
     rows = [
-        _vrow("1000", 0.8, 1e11, 2e11, div_trend=2, payout_ratio=50.0),
-        _vrow("1001", 0.8, 1e11, 2e11),  # 同条件でボーナス無し
+        _vrow("1000", 0.8, 1e11, 2e11),
+        _vrow("1001", 0.8, 1e11, 2e11, op_turnaround=True, payout_ratio=50.0),
+        _vrow("1002", 0.8, 1e11, 2e11, div_trend=2),
     ]
-    df = _score(rows).set_index("code_4")
-    core_with    = df.loc["1000", "funda_score"] - df.loc["1000", "bonus_total"]
-    core_without = df.loc["1001", "funda_score"] - df.loc["1001", "bonus_total"]
-    assert core_with == core_without
+    df = _score(rows)
+    cores = (df["funda_score"] - df["bonus_total"]).round(6)
+    assert cores.nunique() == 1
+
+
+def test_bonus_variant_subtraction():
+    from services.diagnose_value_service import _add_bonus_variants
+    scored = pd.DataFrame([{
+        "funda_score": 100.0, "bonus_activist": 10.0, "bonus_div": 5.0,
+        "bonus_op": 0.0, "bonus_turnaround": 15.0, "bonus_payout": 10.0,
+        "bonus_total": 40.0,
+    }])
+    _add_bonus_variants([{"scored": scored, "as_of": "2024-01-31"}])
+    r = scored.iloc[0]
+    assert r["funda_no_activist"]   == 90.0
+    assert r["funda_no_turnaround"] == 85.0
+    assert r["funda_no_bonus"]      == 60.0

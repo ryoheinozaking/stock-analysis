@@ -399,8 +399,11 @@ def calc_funda_score(df: pd.DataFrame, mode: str = "growth") -> pd.DataFrame:
                                   + ((pr >= 25) & (pr < 40)).astype(float) * 5.0)
             df["payout_in_band"] = ((pr >= 25) & (pr <= 70)).astype(float)
 
-        df["bonus_total"] = (df["bonus_activist"] + df["bonus_div"] + df["bonus_op"]
-                             + df["bonus_turnaround"] + df["bonus_payout"])
+        # 【2026-06-14 撤廃】V字転換・配当性向ボーナスは funda_score に加算しない。
+        # 分解診断（成分別IC + 1個ずつ抜く検証）で、上位20銘柄では両者が逆効果
+        # （より割安な良銘柄を押しのける）と 250日先・60日先の両期間で確認。
+        # bonus_turnaround / bonus_payout 列は監視用に残すが bonus_total には含めない。
+        df["bonus_total"] = df["bonus_activist"] + df["bonus_div"] + df["bonus_op"]
         score = score + df["bonus_total"]
 
     df["funda_score"] = score.round(2)
