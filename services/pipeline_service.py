@@ -1215,8 +1215,10 @@ def run_pipeline(use_claude: bool = True, progress_callback=None, mode: str = "g
     # バリュー株モードは Top20 集中
     # （2026-06-12 再計測: fwd250×52snap で Top20 α(TPX)+9.4% / 勝率76.5%。
     #   Top3〜30 で α はほぼフラットのため分散とのバランスで 20 を維持）
-    # 成長株モードは従来通り Top10
-    top_n = 20 if mode == "value" else 10
+    # 成長株モードは Top5 集中（2026-06-14 de-biased 全期間診断: fwd60 で α は
+    #   上位3-5にほぼ全部あり Top3 +5.5% / Top5 +4.1% → Top7 +1.9% と急減衰。
+    #   飛躍分析への候補供給という役割に合わせ Top10→5 に絞る）
+    top_n = 20 if mode == "value" else 5
     top10 = select_top_candidates(scored, top_n)   # 後方互換のためキー名は top10 維持
 
     ai_result = None
