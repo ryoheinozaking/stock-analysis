@@ -85,3 +85,52 @@ def compute_volume_surge(
         })
     out = pd.DataFrame(rows).sort_values("turnover_ratio", ascending=False)
     return out.reset_index(drop=True)
+
+
+def _cum_return(ret_series: pd.Series, days: int) -> float:
+    tail = ret_series.tail(days)
+    return float((1.0 + tail).prod() - 1.0)
+
+
+def compute_freshness(
+    sector_daily: pd.DataFrame,
+    week_days: int = WEEK_DAYS,
+    month_days: int = MONTH_DAYS,
+) -> pd.DataFrame:
+    """週/月の累積リターンからランクを取り、rank_delta と3分類を返す。
+
+    category: rising(週良・月悪) / winning(両方良) / falling(週悪・月良) / neutral
+    Returns 列: sector, week_return, month_return, week_rank, month_rank,
+                rank_delta, category
+    """
+    rows = []
+    for sector, g in sector_daily.sort_values("Date").groupby("sector"):
+        rows.append({
+            "sector": sector,
+            "week_return": _cum_return(g["ret"], week_days),
+            "month_return": _cum_return(g["ret"], month_days),
+        })
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    # ランク（1 = 最良）。降順リターン → method='min'
+    out["week_rank"] = out["week_return"].rank(ascending=False, method="min")
+    out["month_rank"] = out["month_return"].rank(ascending=False, method="min")
+    out["rank_delta"] = out["week_rank"] - out["month_rank"]
+
+    n = len(out)
+    top = max(1, int(round(n * 0.25)))  # 上位25%を「良」とする自前分位点
+
+    def _classify(r):
+        week_good = r["week_rank"] <= top
+        month_good = r["month_rank"] <= top
+        if week_good and month_good:
+            return "winning"
+        if week_good and not month_good:
+            return "rising"
+        if not week_good and month_good:
+            return "falling"
+        return "neutral"
+
+    out["category"] = out.apply(_classify, axis=1)
+    return out.sort_values("week_rank").reset_index(drop=True)

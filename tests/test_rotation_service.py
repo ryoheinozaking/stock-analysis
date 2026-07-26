@@ -62,3 +62,28 @@ def test_compute_volume_surge_ratio():
     out = rs.compute_volume_surge(sd, median_days=4)
     row = out[out["sector"] == "X"].iloc[0]
     assert row["turnover_ratio"] == pytest.approx(2.7)
+
+
+def _mk_sector_series(sector, rets):
+    """rets: 日次リターン list → sector_daily 風の行群。"""
+    rows = []
+    for i, r in enumerate(rets):
+        rows.append((f"2026-02-{i+1:02d}", sector, r, 100.0, 5, 0.5))
+    return rows
+
+
+def test_compute_freshness_rising_vs_fading():
+    # A: 直近1週だけ強い(月では平凡) → 上昇中。B: 月は強いが直近失速 → 失速。
+    rets_A = [0.0] * 15 + [0.03] * 5           # 月20日中、後半5日だけ+3%
+    rets_B = [0.03] * 15 + [-0.03] * 5          # 前半強く直近マイナス
+    rows = _mk_sector_series("A", rets_A) + _mk_sector_series("B", rets_B)
+    sd = pd.DataFrame(rows, columns=["Date", "sector", "ret", "va", "n", "up_ratio"])
+    out = rs.compute_freshness(sd, week_days=5, month_days=20)
+    a = out[out["sector"] == "A"].iloc[0]
+    b = out[out["sector"] == "B"].iloc[0]
+    # A は週ランクが月ランクより上位(=数値小) → rank_delta 負
+    assert a["rank_delta"] < 0
+    assert a["category"] == "rising"
+    # B は週ランクが月ランクより下位 → rank_delta 正 → 失速
+    assert b["rank_delta"] > 0
+    assert b["category"] == "falling"
