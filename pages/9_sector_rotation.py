@@ -210,7 +210,10 @@ margin_hist = margin_service.load_margin_history()
 if margin_df is None:
     st.info("信用データ未取得です。上の「信用データ更新」ボタンを押してください。")
 else:
-    _table(margin_df.sort_values("margin_ratio", ascending=False), max_rows=15)
+    _name_map = dict(zip(sc["code"], sc["company_name"]))
+    _mdisp = margin_df.sort_values("margin_ratio", ascending=False).copy()
+    _mdisp.insert(1, "company_name", _mdisp["code"].map(_name_map))
+    _table(_mdisp, max_rows=15)
 
     # 市場全体の信用残 推移（週次アーカイブが2週以上あれば）
     if margin_hist is not None and margin_hist["as_of"].nunique() >= 2:
