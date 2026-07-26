@@ -42,3 +42,23 @@ def test_parse_margin_text_second_stock():
 def test_parse_margin_text_raises_on_garbage():
     with pytest.raises(ValueError):
         margin_service.parse_margin_text("これは信用PDFではないテキスト")
+
+
+def test_load_latest_margin_picks_newest(tmp_path, monkeypatch):
+    d = tmp_path / "margin"
+    d.mkdir()
+    old = pd.DataFrame([{"code": "13010", "margin_ratio": 1.0}])
+    new = pd.DataFrame([{"code": "13010", "margin_ratio": 2.0}])
+    old.to_parquet(d / "20260703.parquet")
+    new.to_parquet(d / "20260717.parquet")
+    monkeypatch.setattr(margin_service, "MARGIN_DIR", str(d))
+    got = margin_service.load_latest_margin()
+    assert got is not None
+    assert got[got["code"] == "13010"].iloc[0]["margin_ratio"] == 2.0
+
+
+def test_load_latest_margin_returns_none_when_empty(tmp_path, monkeypatch):
+    d = tmp_path / "margin"
+    d.mkdir()
+    monkeypatch.setattr(margin_service, "MARGIN_DIR", str(d))
+    assert margin_service.load_latest_margin() is None

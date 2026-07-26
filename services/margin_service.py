@@ -57,3 +57,45 @@ def parse_margin_text(text: str) -> pd.DataFrame:
     if not rows:
         raise ValueError("信用残データを1件も抽出できませんでした（フォーマット変更の可能性）")
     return pd.DataFrame(rows)
+
+
+def load_latest_margin() -> Optional[pd.DataFrame]:
+    """data/margin/ の最新（日付最大）アーカイブを返す。無ければ None。"""
+    if not os.path.isdir(MARGIN_DIR):
+        return None
+    files = sorted(glob.glob(os.path.join(MARGIN_DIR, "*.parquet")))
+    if not files:
+        return None
+    return pd.read_parquet(files[-1])
+
+
+def save_margin_archive(df: pd.DataFrame, as_of_yyyymmdd: str) -> str:
+    """信用残 DataFrame を data/margin/{YYYYMMDD}.parquet に保存し、パスを返す。"""
+    os.makedirs(MARGIN_DIR, exist_ok=True)
+    path = os.path.join(MARGIN_DIR, f"{as_of_yyyymmdd}.parquet")
+    df.to_parquet(path, index=False)
+    return path
+
+
+def download_margin_pdf(as_of_yyyymmdd: str, dest_path: str) -> str:
+    """JPX 週次信用 PDF をダウンロードして dest_path に保存。
+
+    URL 規則: .../margin/tvdivq0000001rnl-att/syumatsu{YYYYMMDD}00.pdf
+    ※ 恒久運用は Streamlit「データ更新」から呼ぶ。SSL 失効チェックは無効化。
+    """
+    import urllib.request
+    import ssl
+
+    url = (
+        "https://www.jpx.co.jp/markets/statistics-equities/margin/"
+        f"tvdivq0000001rnl-att/syumatsu{as_of_yyyymmdd}00.pdf"
+    )
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, context=ctx, timeout=60) as r:
+        data = r.read()
+    with open(dest_path, "wb") as f:
+        f.write(data)
+    return dest_path
