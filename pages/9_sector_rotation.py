@@ -36,14 +36,15 @@ def _sector_daily(prices, sector_map):
 
 
 # 表示専用の日本語ラベル（内部の計算列名は英語のまま保つ）
+# percent 書式で表示する小数比率列は、ラベルに (%) を付けない（書式側が % を付ける）
 _LABELS = {
     "sector": "業種", "turnover_ratio": "売買代金倍率", "va": "売買代金(円)",
-    "daily_return_pct": "前日比(%)", "week_return": "週間騰落(%)",
-    "month_return": "月間騰落(%)", "rank_delta": "順位変化", "week_rank": "週間順位",
+    "daily_return_pct": "前日比(%)", "week_return": "週間騰落",
+    "month_return": "月間騰落", "rank_delta": "順位変化", "week_rank": "週間順位",
     "month_rank": "月間順位", "category": "区分", "score": "スコア",
     "turnover_pace": "代金ペース", "persistence": "継続日数",
-    "flow_return": "直近リターン(%)", "breadth": "上昇銘柄比率(%)",
-    "up_turnover_share": "上昇代金シェア(%)", "code": "コード",
+    "flow_return": "直近リターン", "breadth": "上昇銘柄比率",
+    "up_turnover_share": "上昇代金シェア", "code": "コード",
     "company_name": "銘柄名", "self_rank": "業種内順位",
     "self_rank_total": "業種内銘柄数", "vol_ratio": "出来高倍率", "close": "株価",
     "RSI": "RSI", "ma25_dev_pct": "25日線乖離(%)",
@@ -51,17 +52,60 @@ _LABELS = {
     "new_high": "新高値", "sell_balance": "売残", "buy_balance": "買残",
     "sell_wow": "売残前週比", "buy_wow": "買残前週比", "margin_ratio": "信用倍率",
 }
-# 0〜1 の小数比率を % 表示（×100）にする列
-_PCT_COLS = ("week_return", "month_return", "flow_return", "breadth", "up_turnover_share")
+
+# 表示書式（日本語ラベルをキーにする。df に無いキーは Streamlit が無視する）
+_N = st.column_config.NumberColumn
+_COLCFG = {
+    "売買代金(円)": _N(format="localized"),
+    "売残": _N(format="localized"), "買残": _N(format="localized"),
+    "売残前週比": _N(format="localized"), "買残前週比": _N(format="localized"),
+    "株価": _N(format="localized"),
+    "売買代金倍率": _N(format="%.2f"), "出来高倍率": _N(format="%.2f"),
+    "代金ペース": _N(format="%.2f"), "信用倍率": _N(format="%.2f"),
+    "RSI": _N(format="%.1f"),
+    "前日比(%)": _N(format="%.2f"), "25日線乖離(%)": _N(format="%.2f"),
+    "52週高値差(%)": _N(format="%.2f"), "52週安値差(%)": _N(format="%.2f"),
+    "週間騰落": _N(format="percent"), "月間騰落": _N(format="percent"),
+    "直近リターン": _N(format="percent"), "上昇銘柄比率": _N(format="percent"),
+    "上昇代金シェア": _N(format="percent"),
+    "継続日数": _N(format="%d"), "順位変化": _N(format="%d"),
+    "業種内順位": _N(format="%d"), "業種内銘柄数": _N(format="%d"),
+    "週間順位": _N(format="%d"), "月間順位": _N(format="%d"),
+    "スコア": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
+    "新高値": st.column_config.CheckboxColumn(),
+}
+
+_ROW_PX = 35  # 概算の1行高さ。行数に応じて表の高さを固定し間延びを防ぐ
 
 
 def _jp(df):
-    """表示用に列名を日本語化し、比率列を % スケールへ整形する（元データは非破壊）。"""
-    out = df.copy()
-    for c in _PCT_COLS:
-        if c in out.columns:
-            out[c] = (pd.to_numeric(out[c], errors="coerce") * 100).round(2)
-    return out.rename(columns=_LABELS)
+    """表示用に列名を日本語化する（元データは非破壊）。"""
+    return df.rename(columns=_LABELS)
+
+
+def _table(df, max_rows=15):
+    """日本語ラベル + 書式 + 行数ぶんの高さ固定 + インデックス非表示で表示する。"""
+    shown = df.head(max_rows)
+    height = int(_ROW_PX * (len(shown) + 1)) + 3
+    st.dataframe(
+        _jp(shown), hide_index=True, use_container_width=True,
+        height=height, column_config=_COLCFG,
+    )
+
+
+def _hbar(df, cat_col, val_col, title, color):
+    """横棒グラフ（上位ほど上に来るよう反転）。"""
+    d = df.head(10).iloc[::-1]
+    fig = go.Figure(go.Bar(
+        x=d[val_col], y=d[cat_col], orientation="h",
+        marker_color=color,
+        text=[f"{v:,.2f}" for v in d[val_col]], textposition="auto",
+    ))
+    fig.update_layout(
+        title=title, height=340, margin=dict(l=8, r=8, t=40, b=8),
+        xaxis_title=None, yaxis_title=None,
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
 
 prices, sc = _load_data(_data_signature())
@@ -102,49 +146,58 @@ st.divider()
 
 # ── 出来高急増 ──
 st.subheader("出来高急増")
-st.dataframe(_jp(surge.head(15)), use_container_width=True)
+st.caption("売買代金が直近中央値の何倍か（＝資金の集まり具合）。上位ほど注目。")
+cg, ct = st.columns([3, 2])
+with cg:
+    _hbar(surge, "sector", "turnover_ratio", "売買代金倍率 上位", "#4c78a8")
+with ct:
+    _table(surge, max_rows=10)
 
 # ── 鮮度 ──
 st.subheader("鮮度（資金の新旧）")
+st.caption("週順位が月順位より上＝最近来た（上昇中）／両方上位＝勝ち続け／週が落ちた＝失速。")
 fresh = rotation_service.compute_freshness(sd)
 c_rise, c_win, c_fall = st.columns(3)
 with c_rise:
-    st.caption("上昇中（新しく来た）")
-    st.dataframe(_jp(fresh[fresh["category"] == "rising"][["sector", "week_return", "rank_delta"]]), use_container_width=True)
+    st.markdown("**🟢 上昇中（新しく来た）**")
+    _table(fresh[fresh["category"] == "rising"][["sector", "week_return", "rank_delta"]], max_rows=8)
 with c_win:
-    st.caption("勝ち続け")
-    st.dataframe(_jp(fresh[fresh["category"] == "winning"][["sector", "week_return", "month_return"]]), use_container_width=True)
+    st.markdown("**🔵 勝ち続け**")
+    _table(fresh[fresh["category"] == "winning"][["sector", "week_return", "month_return"]], max_rows=8)
 with c_fall:
-    st.caption("失速")
-    st.dataframe(_jp(fresh[fresh["category"] == "falling"][["sector", "week_return", "rank_delta"]]), use_container_width=True)
+    st.markdown("**🔴 失速**")
+    _table(fresh[fresh["category"] == "falling"][["sector", "week_return", "rank_delta"]], max_rows=8)
 
 # ── 資金流入 ──
 st.subheader("資金流入スコア")
+st.caption("代金ペース・継続日数・直近リターン・上昇銘柄比率の合成（0-100）。")
 flow = rotation_service.compute_fund_flow(sd)
-st.dataframe(_jp(flow.head(15)), use_container_width=True)
+fg, ft = st.columns([3, 2])
+with fg:
+    _hbar(flow, "sector", "score", "資金流入スコア 上位", "#54a24b")
+with ft:
+    _table(flow[["sector", "score", "turnover_pace", "persistence", "breadth"]], max_rows=10)
 
 # ── 信用需給（段階2・アーカイブがあれば） ──
 margin_df = margin_service.load_latest_margin()
 if margin_df is not None:
     st.subheader("信用需給（JPX週次）")
-    st.dataframe(
-        _jp(margin_df.sort_values("margin_ratio", ascending=False).head(15)),
-        use_container_width=True,
-    )
+    st.caption("信用倍率 = 買残 ÷ 売残。高いほど買い長。")
+    _table(margin_df.sort_values("margin_ratio", ascending=False), max_rows=15)
 
 # ── ランキング ──
 st.subheader("ランキング")
 rankings = rotation_service.compute_rankings(sc)
 tabs = st.tabs(["モメンタム", "出来高急増(銘柄)"])
 with tabs[0]:
-    st.dataframe(
-        _jp(rankings["momentum"].head(30)[["code", "company_name", "sector", "score", "self_rank", "self_rank_total"]]),
-        use_container_width=True,
+    _table(
+        rankings["momentum"][["code", "company_name", "sector", "score", "self_rank", "self_rank_total"]],
+        max_rows=30,
     )
 with tabs[1]:
-    st.dataframe(
-        _jp(rankings["volume_surge"].head(30)[["code", "company_name", "sector", "vol_ratio", "self_rank"]]),
-        use_container_width=True,
+    _table(
+        rankings["volume_surge"][["code", "company_name", "sector", "vol_ratio", "self_rank"]],
+        max_rows=30,
     )
 
 # ── ドリルダウン ──
@@ -154,9 +207,9 @@ signals = rotation_service.compute_stock_signals(sc)
 sectors = sorted(signals["sector"].dropna().unique())
 sel = st.selectbox("業種を選択", sectors)
 members = signals[signals["sector"] == sel].sort_values("ma25_dev_pct", ascending=False)
-st.dataframe(
-    _jp(members[["code", "company_name", "close", "RSI", "ma25_dev_pct", "from_52w_high_pct", "new_high"]].head(30)),
-    use_container_width=True,
+_table(
+    members[["code", "company_name", "close", "RSI", "ma25_dev_pct", "from_52w_high_pct", "new_high"]],
+    max_rows=30,
 )
 
 code_to_open = st.text_input("詳細を開く銘柄コード（5桁）", "")
