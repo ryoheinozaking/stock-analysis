@@ -55,3 +55,69 @@ with col2:
 with col3:
     surge = rotation_service.compute_volume_surge(sd)
     st.metric("出来高急増業種数", int((surge["turnover_ratio"] >= 1.5).sum()))
+
+st.divider()
+
+# ── 出来高急増 ──
+st.subheader("出来高急増")
+st.dataframe(surge.head(15), use_container_width=True)
+
+# ── 鮮度 ──
+st.subheader("鮮度（資金の新旧）")
+fresh = rotation_service.compute_freshness(sd)
+c_rise, c_win, c_fall = st.columns(3)
+with c_rise:
+    st.caption("上昇中（新しく来た）")
+    st.dataframe(fresh[fresh["category"] == "rising"][["sector", "week_return", "rank_delta"]], use_container_width=True)
+with c_win:
+    st.caption("勝ち続け")
+    st.dataframe(fresh[fresh["category"] == "winning"][["sector", "week_return", "month_return"]], use_container_width=True)
+with c_fall:
+    st.caption("失速")
+    st.dataframe(fresh[fresh["category"] == "falling"][["sector", "week_return", "rank_delta"]], use_container_width=True)
+
+# ── 資金流入 ──
+st.subheader("資金流入スコア")
+flow = rotation_service.compute_fund_flow(sd)
+st.dataframe(flow.head(15), use_container_width=True)
+
+# ── 信用需給（段階2・アーカイブがあれば） ──
+margin_df = margin_service.load_latest_margin()
+if margin_df is not None:
+    st.subheader("信用需給（JPX週次）")
+    st.dataframe(
+        margin_df.sort_values("margin_ratio", ascending=False).head(15),
+        use_container_width=True,
+    )
+
+# ── ランキング ──
+st.subheader("ランキング")
+rankings = rotation_service.compute_rankings(sc)
+tabs = st.tabs(["モメンタム", "出来高急増(銘柄)"])
+with tabs[0]:
+    st.dataframe(
+        rankings["momentum"].head(30)[["code", "company_name", "sector", "score", "self_rank", "self_rank_total"]],
+        use_container_width=True,
+    )
+with tabs[1]:
+    st.dataframe(
+        rankings["volume_surge"].head(30)[["code", "company_name", "sector", "vol_ratio", "self_rank"]],
+        use_container_width=True,
+    )
+
+# ── ドリルダウン ──
+st.divider()
+st.subheader("業種ドリルダウン")
+signals = rotation_service.compute_stock_signals(sc)
+sectors = sorted(signals["sector"].dropna().unique())
+sel = st.selectbox("業種を選択", sectors)
+members = signals[signals["sector"] == sel].sort_values("ma25_dev_pct", ascending=False)
+st.dataframe(
+    members[["code", "company_name", "close", "RSI", "ma25_dev_pct", "from_52w_high_pct", "new_high"]].head(30),
+    use_container_width=True,
+)
+
+code_to_open = st.text_input("詳細を開く銘柄コード（5桁）", "")
+if st.button("銘柄詳細へ") and code_to_open:
+    st.session_state["selected_code"] = code_to_open.strip()
+    st.switch_page("pages/2_stock_detail.py")
