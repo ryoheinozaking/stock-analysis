@@ -93,6 +93,12 @@ def _table(df, max_rows=15):
     )
 
 
+def _fmt_week(yyyymmdd):
+    """'20260717' → '07/17'（週ラベル表示用）。"""
+    s = str(yyyymmdd)
+    return f"{s[4:6]}/{s[6:8]}" if len(s) == 8 else s
+
+
 def _hbar(df, cat_col, val_col, title, color):
     """横棒グラフ（上位ほど上に来るよう反転）。"""
     d = df.head(10).iloc[::-1]
@@ -178,12 +184,60 @@ with fg:
 with ft:
     _table(flow[["sector", "score", "turnover_pace", "persistence", "breadth"]], max_rows=10)
 
-# ── 信用需給（段階2・アーカイブがあれば） ──
+# ── 信用需給（段階2・JPX週次） ──
+st.subheader("信用需給（JPX週次）")
+st.caption("信用倍率 = 買残 ÷ 売残（高いほど買い長）。JPXは直近5週ぶんを公開。")
+
+if st.button("🔄 信用データ更新（JPX直近5週）"):
+    bar = st.progress(0, text="JPXから取得中…")
+    try:
+        res = margin_service.refresh_margin_recent(
+            progress_callback=lambda i, t, msg: bar.progress(
+                min(int((i + 1) / max(t, 1) * 100), 100), text=msg
+            )
+        )
+        bar.empty()
+        st.success(f"更新完了: 保有 {len(res['available'])} 週 / 今回新規 {len(res['new'])} 週")
+        st.cache_data.clear()
+        st.rerun()
+    except Exception as e:  # noqa: BLE001
+        bar.empty()
+        st.error(f"取得に失敗しました: {e}")
+
 margin_df = margin_service.load_latest_margin()
-if margin_df is not None:
-    st.subheader("信用需給（JPX週次）")
-    st.caption("信用倍率 = 買残 ÷ 売残。高いほど買い長。")
+margin_hist = margin_service.load_margin_history()
+
+if margin_df is None:
+    st.info("信用データ未取得です。上の「信用データ更新」ボタンを押してください。")
+else:
     _table(margin_df.sort_values("margin_ratio", ascending=False), max_rows=15)
+
+    # 市場全体の信用残 推移（週次アーカイブが2週以上あれば）
+    if margin_hist is not None and margin_hist["as_of"].nunique() >= 2:
+        agg = (
+            margin_hist.groupby("as_of")
+            .agg(buy=("buy_balance", "sum"), sell=("sell_balance", "sum"))
+            .reset_index()
+            .sort_values("as_of")
+        )
+        agg["ratio"] = agg["buy"] / agg["sell"]
+        agg["週"] = agg["as_of"].map(_fmt_week)
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=agg["週"], y=agg["buy"], name="信用買残 合計",
+                                 mode="lines+markers", line=dict(color="#e45756")))
+        fig.add_trace(go.Scatter(x=agg["週"], y=agg["sell"], name="信用売残 合計",
+                                 mode="lines+markers", line=dict(color="#4c78a8")))
+        fig.add_trace(go.Scatter(x=agg["週"], y=agg["ratio"], name="全体信用倍率",
+                                 mode="lines+markers", line=dict(color="#f58518", dash="dot"),
+                                 yaxis="y2"))
+        fig.update_layout(
+            title="市場全体 信用残の推移（単位:株 / 倍率は右軸）",
+            height=340, margin=dict(l=8, r=8, t=40, b=8),
+            yaxis=dict(title="残高(株)"),
+            yaxis2=dict(title="倍率", overlaying="y", side="right", showgrid=False),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
 # ── ランキング ──
 st.subheader("ランキング")
@@ -211,6 +265,29 @@ _table(
     members[["code", "company_name", "close", "RSI", "ma25_dev_pct", "from_52w_high_pct", "new_high"]],
     max_rows=30,
 )
+
+# 銘柄別 信用残の5週推移（履歴が2週以上あれば）
+if margin_hist is not None and margin_hist["as_of"].nunique() >= 2:
+    name_map = dict(zip(members["code"], members["company_name"]))
+    opts = [c for c in members["code"].tolist() if c in set(margin_hist["code"])]
+    if opts:
+        pick = st.selectbox(
+            "信用残の推移を見る銘柄", opts,
+            format_func=lambda c: f"{c} {name_map.get(c, '')}",
+        )
+        sub = margin_hist[margin_hist["code"] == pick].sort_values("as_of").copy()
+        sub["週"] = sub["as_of"].map(_fmt_week)
+        figm = go.Figure()
+        figm.add_trace(go.Scatter(x=sub["週"], y=sub["buy_balance"], name="信用買残",
+                                  mode="lines+markers", line=dict(color="#e45756")))
+        figm.add_trace(go.Scatter(x=sub["週"], y=sub["sell_balance"], name="信用売残",
+                                  mode="lines+markers", line=dict(color="#4c78a8")))
+        figm.update_layout(
+            title=f"{pick} {name_map.get(pick, '')} 信用残の推移（単位:株）",
+            height=300, margin=dict(l=8, r=8, t=40, b=8),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        st.plotly_chart(figm, use_container_width=True)
 
 code_to_open = st.text_input("詳細を開く銘柄コード（5桁）", "")
 if st.button("銘柄詳細へ") and code_to_open:

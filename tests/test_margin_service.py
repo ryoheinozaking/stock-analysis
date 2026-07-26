@@ -73,3 +73,37 @@ def test_parse_margin_text_raises_on_negative_balance():
     ])
     with __import__("pytest").raises(ValueError):
         margin_service.parse_margin_text(bad)
+
+
+def test_parse_week_dates_extracts_and_sorts_desc():
+    html = (
+        'x <a href="/.../syumatsu2026061900.pdf">a</a> '
+        '<a href="/.../syumatsu2026071700.pdf">b</a> '
+        'dup <a href="/.../syumatsu2026070300.pdf">c</a> '
+        '<a href="/.../syumatsu2026071700.pdf">dup</a>'
+    )
+    got = margin_service.parse_week_dates(html)
+    assert got == ["20260717", "20260703", "20260619"]
+
+
+def test_load_margin_history_concats_with_as_of(tmp_path, monkeypatch):
+    d = tmp_path / "margin"
+    d.mkdir()
+    import pandas as pd
+    pd.DataFrame([{"code": "13010", "buy_balance": 100, "sell_balance": 10}]).to_parquet(d / "20260703.parquet")
+    pd.DataFrame([{"code": "13010", "buy_balance": 120, "sell_balance": 8}]).to_parquet(d / "20260717.parquet")
+    monkeypatch.setattr(margin_service, "MARGIN_DIR", str(d))
+    hist = margin_service.load_margin_history()
+    assert hist is not None
+    assert set(hist["as_of"]) == {"20260703", "20260717"}
+    assert len(hist) == 2
+
+
+def test_archived_weeks_desc(tmp_path, monkeypatch):
+    d = tmp_path / "margin"
+    d.mkdir()
+    import pandas as pd
+    for wk in ["20260703", "20260717", "20260619"]:
+        pd.DataFrame([{"code": "13010"}]).to_parquet(d / f"{wk}.parquet")
+    monkeypatch.setattr(margin_service, "MARGIN_DIR", str(d))
+    assert margin_service.archived_weeks() == ["20260717", "20260703", "20260619"]

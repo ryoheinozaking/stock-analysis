@@ -85,6 +85,66 @@ def save_margin_archive(df: pd.DataFrame, as_of_yyyymmdd: str) -> str:
     return path
 
 
+_WEEK_RE = re.compile(r"syumatsu(\d{8})00\.pdf")
+_LIST_URL = "https://www.jpx.co.jp/markets/statistics-equities/margin/05.html"
+
+
+def parse_week_dates(html: str) -> list:
+    """JPX 掲載ページ HTML から取得可能な週(申込日 YYYYMMDD)を新しい順で返す。"""
+    return sorted(set(_WEEK_RE.findall(html)), reverse=True)
+
+
+def list_available_weeks(timeout: int = 30) -> list:
+    """JPX の信用残ページから取得可能な週(最大5)を新しい順で返す。"""
+    import urllib.request
+
+    req = urllib.request.Request(_LIST_URL, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        html = r.read().decode("utf-8", errors="ignore")
+    return parse_week_dates(html)
+
+
+def archived_weeks() -> list:
+    """data/margin/ に既にある週(YYYYMMDD)を新しい順で返す。"""
+    if not os.path.isdir(MARGIN_DIR):
+        return []
+    files = glob.glob(os.path.join(MARGIN_DIR, "*.parquet"))
+    return sorted((os.path.splitext(os.path.basename(f))[0] for f in files), reverse=True)
+
+
+def refresh_margin_recent(progress_callback=None) -> dict:
+    """JPX が掲載中の週(最大5)のうち未取得ぶんだけ DL→パース→アーカイブする。
+
+    Returns {"available": [...全掲載週...], "new": [...今回取得した週...]}
+    """
+    weeks = list_available_weeks()
+    have = set(archived_weeks())
+    newly = []
+    for i, wk in enumerate(weeks):
+        if wk in have:
+            continue
+        if progress_callback:
+            progress_callback(i, len(weeks), f"{wk} を取得中")
+        refresh_margin(wk)
+        newly.append(wk)
+    return {"available": weeks, "new": newly}
+
+
+def load_margin_history() -> Optional[pd.DataFrame]:
+    """data/margin/ の全アーカイブを読み、週(as_of)列付きの縦持ちで返す。無ければ None。"""
+    if not os.path.isdir(MARGIN_DIR):
+        return None
+    files = sorted(glob.glob(os.path.join(MARGIN_DIR, "*.parquet")))
+    if not files:
+        return None
+    parts = []
+    for f in files:
+        d = pd.read_parquet(f)
+        d["as_of"] = os.path.splitext(os.path.basename(f))[0]
+        parts.append(d)
+    return pd.concat(parts, ignore_index=True)
+
+
 def refresh_margin(as_of_yyyymmdd: str, tmp_dir: Optional[str] = None) -> str:
     """JPX 週次信用 PDF を取得→抽出→パース→アーカイブ保存する一連の配管。
 
