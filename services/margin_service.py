@@ -56,7 +56,15 @@ def parse_margin_text(text: str) -> pd.DataFrame:
             i += 1
     if not rows:
         raise ValueError("信用残データを1件も抽出できませんでした（フォーマット変更の可能性）")
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    # 妥当性ゲート（列ずれの黙認防止）: 残高は発行株数ベースで必ず非負。
+    # 負の残高が出たら列の並びがずれている（前週比を残高スロットに拾った等）ので中断する。
+    bad = (df["sell_balance"] < 0) | (df["buy_balance"] < 0)
+    if bad.any():
+        raise ValueError(
+            f"残高に負値が {int(bad.sum())} 件（列ずれ＝フォーマット変更の可能性）"
+        )
+    return df
 
 
 def load_latest_margin() -> Optional[pd.DataFrame]:
@@ -75,6 +83,29 @@ def save_margin_archive(df: pd.DataFrame, as_of_yyyymmdd: str) -> str:
     path = os.path.join(MARGIN_DIR, f"{as_of_yyyymmdd}.parquet")
     df.to_parquet(path, index=False)
     return path
+
+
+def refresh_margin(as_of_yyyymmdd: str, tmp_dir: Optional[str] = None) -> str:
+    """JPX 週次信用 PDF を取得→抽出→パース→アーカイブ保存する一連の配管。
+
+    ダウンロード → scripts.extract_pdf.extract_text() でテキスト抽出 →
+    parse_margin_text() → save_margin_archive()。保存先パスを返す。
+    PDF テキスト抽出は extract_pdf.extract_text() に委譲（fitz を直接 import しない）。
+    恒久運用は Streamlit「データ更新」から呼ぶ想定。
+    """
+    import tempfile
+
+    from scripts.extract_pdf import extract_text
+
+    tmp_dir = tmp_dir or tempfile.gettempdir()
+    pdf_path = os.path.join(tmp_dir, f"_jpx_syumatsu_{as_of_yyyymmdd}.pdf")
+    download_margin_pdf(as_of_yyyymmdd, pdf_path)
+    try:
+        df = parse_margin_text(extract_text(pdf_path))
+    finally:
+        if os.path.exists(pdf_path):
+            os.remove(pdf_path)
+    return save_margin_archive(df, as_of_yyyymmdd)
 
 
 def download_margin_pdf(as_of_yyyymmdd: str, dest_path: str) -> str:

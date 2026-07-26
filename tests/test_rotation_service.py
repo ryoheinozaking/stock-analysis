@@ -156,3 +156,37 @@ def test_compute_rankings_self_rank_within_sector():
     a = mom[mom["code"] == "0001"].iloc[0]
     assert a["self_rank"] == 1
     assert a["self_rank_total"] == 2  # 業種Xは2銘柄
+
+
+# ── コードレビュー(2026-07-26)由来の堅牢性テスト ──
+
+def test_compute_rankings_handles_nan_and_zero_avg_volume():
+    # NaN score / avg_volume=0(→vol_ratio inf) / 欠損は落ちてはいけない(C1)。
+    sc = pd.DataFrame([
+        {"code": "0001", "company_name": "A", "sector": "X",
+         "score": 90.0, "latest_volume": 100.0, "avg_volume": 50.0},
+        {"code": "0002", "company_name": "B", "sector": "X",
+         "score": float("nan"), "latest_volume": 80.0, "avg_volume": 0.0},
+        {"code": "0003", "company_name": "C", "sector": "Y",
+         "score": 80.0, "latest_volume": 300.0, "avg_volume": 60.0},
+    ])
+    out = rs.compute_rankings(sc)  # 例外を投げないこと
+    assert len(out["momentum"]) == 3
+    # NaN score の行は self_rank が NA(欠損)になる
+    b = out["momentum"][out["momentum"]["code"] == "0002"].iloc[0]
+    assert pd.isna(b["self_rank"])
+
+
+def test_compute_volume_surge_empty_input_returns_columns():
+    empty = pd.DataFrame(columns=["Date", "sector", "ret", "va", "n", "up_ratio"])
+    out = rs.compute_volume_surge(empty)
+    assert list(out.columns) == ["sector", "turnover_ratio", "va", "daily_return_pct"]
+    assert len(out) == 0
+
+
+def test_compute_stock_signals_missing_columns_does_not_crash():
+    # mom_new_high / MA25 が無い最小 stock_cache でも落ちない(M4)。
+    sc = pd.DataFrame([{"code": "0001", "sector": "X", "close": 100.0}])
+    out = rs.compute_stock_signals(sc)
+    assert out.iloc[0]["new_high"] == False
+    assert pd.isna(out.iloc[0]["ma25_dev_pct"])

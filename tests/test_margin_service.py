@@ -62,3 +62,14 @@ def test_load_latest_margin_returns_none_when_empty(tmp_path, monkeypatch):
     d.mkdir()
     monkeypatch.setattr(margin_service, "MARGIN_DIR", str(d))
     assert margin_service.load_latest_margin() is None
+
+
+def test_parse_margin_text_raises_on_negative_balance():
+    # 列がずれて残高スロットに前週比(負値)を拾った状況を模擬 → 中断すべき(I2)。
+    bad = "\n".join([
+        "B", "テスト　普通株式", "99990", "JP9999999999",
+        "▲ 500",   # 売残高スロットに負値(=列ずれ)
+        "100", "200", "50",
+    ])
+    with __import__("pytest").raises(ValueError):
+        margin_service.parse_margin_text(bad)

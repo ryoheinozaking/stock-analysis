@@ -83,6 +83,10 @@ def compute_volume_surge(
             "va": float(va[-1]),
             "daily_return_pct": float(g["ret"].iloc[-1] * 100.0),
         })
+    if not rows:
+        return pd.DataFrame(
+            columns=["sector", "turnover_ratio", "va", "daily_return_pct"]
+        )
     out = pd.DataFrame(rows).sort_values("turnover_ratio", ascending=False)
     return out.reset_index(drop=True)
 
@@ -116,6 +120,8 @@ def compute_freshness(
     # ランク（1 = 最良）。降順リターン → method='min'
     out["week_rank"] = out["week_return"].rank(ascending=False, method="min")
     out["month_rank"] = out["month_return"].rank(ascending=False, method="min")
+    # rank_delta = 週順位 − 月順位。順位は 1=最良 なので、週が月より上位（改善中）
+    # だと差は「負」になる。負ほど最近急浮上、正ほど失速、という符号の向きに注意。
     out["rank_delta"] = out["week_rank"] - out["month_rank"]
 
     n = len(out)
@@ -147,10 +153,12 @@ def compute_fund_flow(
     sector_daily: pd.DataFrame,
     median_days: int = TURNOVER_MEDIAN_DAYS,
 ) -> pd.DataFrame:
-    """資金流入5成分を業種内相対で正規化し合成スコア(0-100)を返す。
+    """資金流入スコア(0-100)を業種内相対で正規化して返す。
 
-    成分: turnover_pace / persistence / flow_return / breadth / up_turnover_share
-    ※ up_turnover_share は sector_daily に上昇売買代金列が無い場合 up_ratio で代替。
+    合成に使う独立成分: turnover_pace / persistence / flow_return / breadth の4つ。
+    up_turnover_share は本来5つ目の独立成分だが、板情報が無い現状は breadth と
+    同じ up_ratio で代替しているため、二重計上を避けて合成スコアには含めない
+    （出力列としては監視用に残す）。将来 上昇売買代金 を別途取得したら合成に加える。
     Returns 列: sector, score, turnover_pace, persistence, flow_return,
                 breadth, up_turnover_share
     """
@@ -179,12 +187,12 @@ def compute_fund_flow(
     out = pd.DataFrame(rows)
     if out.empty:
         return out
+    # 独立な4成分のみ合成（up_turnover_share は現状 breadth と同値のため除外）
     comp = pd.DataFrame({
         "c_pace": _minmax_0_100(out["turnover_pace"]),
         "c_persist": _minmax_0_100(out["persistence"]),
         "c_return": _minmax_0_100(out["flow_return"]),
         "c_breadth": _minmax_0_100(out["breadth"]),
-        "c_share": _minmax_0_100(out["up_turnover_share"]),
     })
     out["score"] = comp.mean(axis=1)
     return out.sort_values("score", ascending=False).reset_index(drop=True)
@@ -209,12 +217,22 @@ def compute_stock_signals(stock_cache: pd.DataFrame) -> pd.DataFrame:
                 ma25_dev_pct, from_52w_high_pct, from_52w_low_pct, new_high
     """
     df = stock_cache.copy()
-    close = pd.to_numeric(df.get("close"), errors="coerce")
-    ma25 = pd.to_numeric(df.get("MA25"), errors="coerce")
+
+    def _num_col(name: str) -> pd.Series:
+        # 列が無くても落ちないように欠損列は NaN 系列で補う（真に防御的）
+        if name not in df.columns:
+            return pd.Series(np.nan, index=df.index)
+        return pd.to_numeric(df[name], errors="coerce")
+
+    close = _num_col("close")
+    ma25 = _num_col("MA25")
     df["ma25_dev_pct"] = (close - ma25) / ma25 * 100.0
-    df["from_52w_high_pct"] = pd.to_numeric(df.get("sepa_from_high"), errors="coerce")
-    df["from_52w_low_pct"] = pd.to_numeric(df.get("sepa_from_low"), errors="coerce")
-    df["new_high"] = df.get("mom_new_high", False).astype("boolean").fillna(False)
+    df["from_52w_high_pct"] = _num_col("sepa_from_high")
+    df["from_52w_low_pct"] = _num_col("sepa_from_low")
+    if "mom_new_high" in df.columns:
+        df["new_high"] = df["mom_new_high"].astype("boolean").fillna(False)
+    else:
+        df["new_high"] = False
     cols = ["code", "code_4", "company_name", "sector", "close", "RSI",
             "ma25_dev_pct", "from_52w_high_pct", "from_52w_low_pct", "new_high"]
     return df[[c for c in cols if c in df.columns]].reset_index(drop=True)
@@ -222,9 +240,10 @@ def compute_stock_signals(stock_cache: pd.DataFrame) -> pd.DataFrame:
 
 def _with_self_rank(df: pd.DataFrame, by: str) -> pd.DataFrame:
     df = df.copy()
-    df["self_rank"] = (
-        df.groupby("sector")[by].rank(ascending=False, method="min").astype(int)
-    )
+    # ランク対象が NaN の行は rank() が NaN を返す。int 変換は NaN で落ちるため
+    # nullable Int64 を使う（NaN score / avg_volume=0 由来の inf を安全に扱う）。
+    ranks = df.groupby("sector")[by].rank(ascending=False, method="min")
+    df["self_rank"] = ranks.astype("Int64")
     df["self_rank_total"] = df.groupby("sector")["sector"].transform("size")
     return df
 
@@ -240,6 +259,8 @@ def compute_rankings(stock_cache: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         pd.to_numeric(df.get("latest_volume"), errors="coerce")
         / pd.to_numeric(df.get("avg_volume"), errors="coerce")
     )
+    # avg_volume=0 由来の inf を NaN に落とす（順位付けで無限大が最上位に来るのを防ぐ）
+    df["vol_ratio"] = df["vol_ratio"].replace([np.inf, -np.inf], np.nan)
     rankings: Dict[str, pd.DataFrame] = {}
     rankings["momentum"] = _with_self_rank(
         df.sort_values("score", ascending=False), by="score"
