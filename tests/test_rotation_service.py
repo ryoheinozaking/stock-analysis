@@ -117,3 +117,21 @@ def test_theme_temperature_range_and_direction():
     assert 0 <= t_cold < t_hot <= 100
     assert t_hot > 60
     assert t_cold < 40
+
+
+def test_compute_stock_signals_uses_sepa_columns():
+    sc = pd.DataFrame([
+        {"code": "0001", "code_4": "0001", "company_name": "テストA",
+         "sector": "X", "close": 110.0, "MA25": 100.0, "RSI": 55.0,
+         "sepa_from_low": 40.0, "sepa_from_high": -2.0, "mom_new_high": True},
+        {"code": "0002", "code_4": "0002", "company_name": "テストB",
+         "sector": "X", "close": 90.0, "MA25": 100.0, "RSI": 45.0,
+         "sepa_from_low": 3.0, "sepa_from_high": -30.0, "mom_new_high": False},
+    ])
+    out = rs.compute_stock_signals(sc)
+    a = out[out["code"] == "0001"].iloc[0]
+    # MA25乖離率 = (110-100)/100*100 = +10%
+    assert a["ma25_dev_pct"] == pytest.approx(10.0)
+    assert bool(a["new_high"]) is True
+    assert a["from_52w_high_pct"] == pytest.approx(-2.0)
+    assert a["from_52w_low_pct"] == pytest.approx(40.0)

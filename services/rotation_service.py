@@ -200,3 +200,21 @@ def compute_theme_temperature(sector_summary: pd.DataFrame) -> float:
     advancing = float((sector_summary["period_return"] > 0).mean()) * 100.0
     med_breadth = float(sector_summary["breadth"].median()) * 100.0
     return round((advancing + med_breadth) / 2.0, 1)
+
+
+def compute_stock_signals(stock_cache: pd.DataFrame) -> pd.DataFrame:
+    """stock_cache から銘柄レベル需給シグナルを組み立てる。
+
+    Returns 列: code, code_4, company_name, sector, close, RSI,
+                ma25_dev_pct, from_52w_high_pct, from_52w_low_pct, new_high
+    """
+    df = stock_cache.copy()
+    close = pd.to_numeric(df.get("close"), errors="coerce")
+    ma25 = pd.to_numeric(df.get("MA25"), errors="coerce")
+    df["ma25_dev_pct"] = (close - ma25) / ma25 * 100.0
+    df["from_52w_high_pct"] = pd.to_numeric(df.get("sepa_from_high"), errors="coerce")
+    df["from_52w_low_pct"] = pd.to_numeric(df.get("sepa_from_low"), errors="coerce")
+    df["new_high"] = df.get("mom_new_high", False).astype("boolean").fillna(False)
+    cols = ["code", "code_4", "company_name", "sector", "close", "RSI",
+            "ma25_dev_pct", "from_52w_high_pct", "from_52w_low_pct", "new_high"]
+    return df[[c for c in cols if c in df.columns]].reset_index(drop=True)
