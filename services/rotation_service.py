@@ -188,3 +188,15 @@ def compute_fund_flow(
     })
     out["score"] = comp.mean(axis=1)
     return out.sort_values("score", ascending=False).reset_index(drop=True)
+
+
+def compute_theme_temperature(sector_summary: pd.DataFrame) -> float:
+    """市況の体温計(0-100)。上昇業種比率と中央breadthの平均。
+
+    sector_summary 列: sector, period_return, breadth
+    """
+    if sector_summary.empty:
+        return 50.0
+    advancing = float((sector_summary["period_return"] > 0).mean()) * 100.0
+    med_breadth = float(sector_summary["breadth"].median()) * 100.0
+    return round((advancing + med_breadth) / 2.0, 1)

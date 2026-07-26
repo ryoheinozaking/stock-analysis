@@ -102,3 +102,18 @@ def test_compute_fund_flow_score_bounds_and_components():
     assert out["score"].between(0, 100).all()
     # A が最高スコア
     assert out.sort_values("score", ascending=False).iloc[0]["sector"] == "A"
+
+
+def test_theme_temperature_range_and_direction():
+    # 全業種プラス&高breadth → 高温。全業種マイナス&低breadth → 低温。
+    hot_rows, cold_rows = [], []
+    for s in ["A", "B", "C", "D"]:
+        hot_rows.append((s, 0.02, 0.9))
+        cold_rows.append((s, -0.02, 0.1))
+    hot = pd.DataFrame(hot_rows, columns=["sector", "period_return", "breadth"])
+    cold = pd.DataFrame(cold_rows, columns=["sector", "period_return", "breadth"])
+    t_hot = rs.compute_theme_temperature(hot)
+    t_cold = rs.compute_theme_temperature(cold)
+    assert 0 <= t_cold < t_hot <= 100
+    assert t_hot > 60
+    assert t_cold < 40
