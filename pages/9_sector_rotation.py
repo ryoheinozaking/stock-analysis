@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """セクター回転検知ダッシュボード（KabuTrend /trend 参考・自前データ）。"""
+import os
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -10,8 +12,19 @@ st.set_page_config(page_title="セクター回転", layout="wide")
 st.title("セクター回転検知")
 
 
+def _data_signature():
+    """prices/stock_cache の更新時刻をキャッシュキーにする。
+
+    データ更新後にファイルが変わればキーが変わり、@st.cache_data が
+    自動で読み直す（古いキャッシュを最大 ttl 秒返し続ける問題を防ぐ）。
+    """
+    def _mtime(path):
+        return os.path.getmtime(path) if os.path.exists(path) else 0.0
+    return (_mtime(batch_service.PRICES_PATH), _mtime(batch_service.CACHE_PATH))
+
+
 @st.cache_data(ttl=3600)
-def _load_data():
+def _load_data(_signature):
     prices = pd.read_parquet(batch_service.PRICES_PATH)
     sc = batch_service.load_cache()
     return prices, sc
@@ -22,7 +35,7 @@ def _sector_daily(prices, sector_map):
     return rotation_service.load_sector_daily(prices, sector_map)
 
 
-prices, sc = _load_data()
+prices, sc = _load_data(_data_signature())
 if sc is None or prices.empty:
     st.warning("stock_cache または prices が空です。先に『データ更新』を実行してください。")
     st.stop()
