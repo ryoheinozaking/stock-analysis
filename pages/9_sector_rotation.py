@@ -211,9 +211,26 @@ if margin_df is None:
     st.info("信用データ未取得です。上の「信用データ更新」ボタンを押してください。")
 else:
     _name_map = dict(zip(sc["code"], sc["company_name"]))
-    _mdisp = margin_df.sort_values("margin_ratio", ascending=False).copy()
-    _mdisp.insert(1, "company_name", _mdisp["code"].map(_name_map))
-    _table(_mdisp, max_rows=15)
+
+    def _margin_view(df, sort_col, ascending=False, min_bal=None):
+        """信用残を指定基準で並べ、銘柄名を付けて返す（小口除外オプション付き）。"""
+        d = df.copy()
+        if min_bal is not None:
+            d = d[(d["buy_balance"] >= min_bal) & (d["sell_balance"] >= min_bal)]
+        d = d.sort_values(sort_col, ascending=ascending)
+        d.insert(1, "company_name", d["code"].map(_name_map))
+        return d
+
+    mt1, mt2, mt3 = st.tabs(["信用買残 急増", "信用売残 急増(取組悪化)", "信用倍率 上位(小口除外)"])
+    with mt1:
+        st.caption("前週から信用買残が最も増えた銘柄（買い需要の増加）。")
+        _table(_margin_view(margin_df, "buy_wow"), max_rows=15)
+    with mt2:
+        st.caption("前週から信用売残が最も増えた銘柄（空売り増加＝取組悪化・将来の踏み上げ余地）。")
+        _table(_margin_view(margin_df, "sell_wow"), max_rows=15)
+    with mt3:
+        st.caption("信用倍率が高い＝買い長。売残・買残が各5万株以上に限定し、分母極小のアーティファクトを除外。")
+        _table(_margin_view(margin_df, "margin_ratio", min_bal=50000), max_rows=15)
 
     # 市場全体の信用残 推移（週次アーカイブが2週以上あれば）
     if margin_hist is not None and margin_hist["as_of"].nunique() >= 2:
