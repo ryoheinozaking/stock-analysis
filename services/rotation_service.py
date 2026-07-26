@@ -44,7 +44,7 @@ def load_sector_daily(
     for _code, cp in df.groupby("Code", sort=False):
         cp = cp.sort_values("Date")
         norm = split_adjust.normalize_close(cp, dropna=False)
-        ret_parts.append(norm.pct_change())
+        ret_parts.append(norm.pct_change(fill_method=None))
     df["ret"] = pd.concat(ret_parts) if ret_parts else pd.Series(dtype=float)
     df["sector"] = df["Code"].map(sector_map)
     df = df.dropna(subset=["sector"])
