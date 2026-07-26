@@ -25,6 +25,23 @@ import sys
 from pathlib import Path
 
 
+def extract_text(pdf_path) -> str:
+    """PDF からプレーンテキストを抽出して返す（ページ区切り付き）。
+
+    fitz(PyMuPDF) import はこの関数に集約。他モジュールはこれを import して使う。
+    """
+    from pathlib import Path
+    import fitz  # PyMuPDF
+
+    doc = fitz.open(str(Path(pdf_path)))
+    page_texts = []
+    for i, page in enumerate(doc):
+        if i > 0:
+            page_texts.append("\n--- PAGE BREAK ---\n")
+        page_texts.append(page.get_text())
+    return "".join(page_texts)
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print("Usage: extract_pdf.py <pdf_path> [--save]", file=sys.stderr)
@@ -39,7 +56,7 @@ def main() -> int:
         return 2
 
     try:
-        import fitz  # PyMuPDF
+        import fitz  # noqa: F401  PyMuPDF (import check only; extract_text() does the real import)
     except ImportError:
         print(
             "ERROR: PyMuPDF not installed. Run:\n"
@@ -50,7 +67,7 @@ def main() -> int:
         return 2
 
     try:
-        doc = fitz.open(str(pdf_path))
+        full_text = extract_text(pdf_path)
     except Exception as e:
         print(f"ERROR: Cannot open PDF: {e}", file=sys.stderr)
         return 2
@@ -60,13 +77,6 @@ def main() -> int:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
-
-    page_texts = []
-    for i, page in enumerate(doc):
-        if i > 0:
-            page_texts.append("\n--- PAGE BREAK ---\n")
-        page_texts.append(page.get_text())
-    full_text = "".join(page_texts)
 
     print(full_text)
 
