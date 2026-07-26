@@ -1,7 +1,7 @@
 # セクター回転検知ダッシュボード — 設計書
 
 - 日付: 2026-07-26
-- ステータス: 承認待ち（Codex レビュー反映済み・rev2）
+- ステータス: 承認待ち（Codex レビュー2巡反映済み・rev3）
 - 元ネタ: [KabuTrend /trend](https://kabutrend.com/trend) を参考 UI とし、指標・閾値・検証は自前で作る
 
 ---
@@ -195,16 +195,37 @@ JPX 公式「[銘柄別信用取引週末残高](https://www.jpx.co.jp/markets/s
 ### 5.2 パイプライン
 
 ```
-JPX週次PDF(syumatsu*.pdf)  →  extract_pdf.py(PyMuPDF)  →  専用パーサ
+JPX週次PDF(syumatsu*.pdf)  →  extract_pdf.extract_text()(PyMuPDF)  →  専用パーサ
    → data/margin/{YYYYMMDD}.parquet として週次アーカイブ保存(履歴構築)
-   → rotation_service が最新を読み込み → 信用倍率(買残/売残)・信用残増減(前週比) を算出
+   → rotation_service が最新アーカイブを読み込み → 信用倍率(買残/売残)・信用残増減(前週比) を算出
 ```
 
-### 5.3 拡張フック
+### 5.3 PDF 抽出の実装方針（Codexレビュー反映）
 
-`rotation_service.py` に信用データ読み込みの関数境界を最初から用意する。margin.parquet が
-存在すれば信用指標を有効化し、無ければ段階1 の指標のみ表示（グレースフルデグレード）。
-これにより、JPX パイプラインの実装完了前でもダッシュボード本体は動作する。
+本プロジェクトの PDF ルール上、PDF テキスト抽出は `scripts/extract_pdf.py`（PyMuPDF）に
+一元化する。`margin_service.py` は **`fitz`（PyMuPDF）を直接 import しない**。
+
+- **方針**: `scripts/extract_pdf.py` を軽くリファクタし、抽出ロジックをモジュール関数
+  `extract_text(pdf_path: Path) -> str` として公開する（現状 `main()` 内にインラインの処理を
+  切り出すだけ。CLI 挙動は不変）。`margin_service.py` はこの関数を import して使う。
+- これで「fitz import は extract_pdf.py に集約」というルールを守りつつ、サブプロセス
+  起動のオーバーヘッドも避けられる。
+
+### 5.4 依存関係・環境（Codexレビュー反映）
+
+- **`requirements.txt` に `pymupdf` を追加する**（現状は `pypdf>=3.0.0` のみで PyMuPDF 不在）。
+  これがないと Streamlit Cloud や再構築環境で JPX 信用 PDF の更新が落ちる。段階2 を今回
+  含める以上、必須の追加。
+- **`.gitignore` に `data/margin/` を追加する**。現状の `data/*.parquet` は直下のみに効き、
+  ネストした `data/margin/*.parquet` は Git に乗ってしまう（他のサブディレクトリ
+  `data/fins_cache/` 等と同様に明示が必要）。
+
+### 5.5 拡張フック（グレースフルデグレード）
+
+`rotation_service.py` に信用データ読み込みの関数境界を最初から用意する。**`data/margin/` から
+最新アーカイブ（`{YYYYMMDD}.parquet` の日付最大）を探して**読み込み、存在すれば信用指標を
+有効化、1件も無ければ段階1 の指標のみ表示（グレースフルデグレード）。これにより、JPX
+パイプラインの実装完了前でもダッシュボード本体は動作する。
 
 ---
 
@@ -217,7 +238,8 @@ JPX週次PDF(syumatsu*.pdf)  →  extract_pdf.py(PyMuPDF)  →  専用パーサ
 2. 出来高急増セクション（横棒 + テーブル）
 3. 鮮度セクション（上昇中 / 勝ち続け / 失速 の3カラム、順位移動を可視化）
 4. 資金流入セクション（合成スコア順テーブル + 5成分の内訳）
-5. 信用需給セクション（段階2。信用倍率・信用残増減ランキング。margin.parquet があれば表示）
+5. 信用需給セクション（段階2。信用倍率・信用残増減ランキング。`data/margin/` に最新
+   アーカイブがあれば表示、無ければ非表示）
 6. ランキングセクション（タブ切替）
 7. ドリルダウン: 業種選択 → 構成銘柄モメンタム/需給表 → 詳細ページへ
 
@@ -228,9 +250,15 @@ JPX週次PDF(syumatsu*.pdf)  →  extract_pdf.py(PyMuPDF)  →  専用パーサ
 - `services/rotation_service.py` — 純粋計算（隔離・テスト可能・信用フック内蔵）
 - `pages/9_sector_rotation.py` — UI + `@st.cache_data`
 - `tests/test_rotation_service.py` — 合成データによる単体テスト
-- （段階2）JPX 信用残 PDF のダウンロード + PyMuPDF パースは `services/` 内に追加
-  （`margin_service.py` 等・実装時にモジュール名確定）。`scripts/extract_pdf.py` を利用
+- （段階2）JPX 信用残 PDF のダウンロード + パースは `services/margin_service.py`（実装時に
+  名称確定）。テキスト抽出は `scripts/extract_pdf.extract_text()` を import して使う
+  （`fitz` を直接 import しない）
+- （段階2）`scripts/extract_pdf.py` — `extract_text()` 関数を公開するよう軽微リファクタ
+- （段階2）`requirements.txt` — `pymupdf` を追加
+- （段階2）`.gitignore` — `data/margin/` を追加
 - （段階2）`data/margin/{YYYYMMDD}.parquet` — 週次アーカイブ（履歴構築のため週ごとに保存）
+- `tests/fixtures/margin_sample.txt` — JPX PDF から抽出したテキストの小サンプル（数銘柄分）。
+  パーサ単体テストの入力に使う（下記§8）
 
 ---
 
@@ -246,9 +274,17 @@ JPX週次PDF(syumatsu*.pdf)  →  extract_pdf.py(PyMuPDF)  →  専用パーサ
 - 52週シグナルが `stock_cache` の `sepa_from_low/high`・`mom_new_high` から引かれ、
   prices からの260日再計算をしていないか
 - margin アーカイブ不在時に信用指標がスキップされ段階1が動くか（グレースフルデグレード）
-- （段階2）JPX PDF パーサ: 保存済みサンプル PDF を入力に、既知の数銘柄（例: 13010 極洋の
-  売残2,800・買残162,700）が正しく抽出されるか。フォーマット変更でヘッダが崩れた場合に
-  黙って通らずエラーになるか
+- （段階2）JPX PDF パーサ: **`tests/fixtures/margin_sample.txt`**（PDF から抽出済みの
+  テキストを数銘柄分にトリムした軽量サンプルを Git 管理）を入力に、既知の銘柄
+  （例: 13010 極洋の売残2,800・買残162,700）が正しく構造化されるか。フォーマット変更で
+  ヘッダが崩れた場合に黙って通らずエラーになるか
+
+> **テスト用フィクスチャの方針（Codexレビュー反映）**: PyMuPDF による PDF→テキスト抽出は
+> `extract_pdf.py` の責務で既に信頼済みのため、パーサ単体テストは **抽出済みテキスト
+> （`tests/fixtures/margin_sample.txt`、数銘柄にトリム・軽量・Git管理）** を入力とする。
+> これで CI/他環境でも PyMuPDF や 836KB の PDF バイナリに依存せず安定。PDF 本体からの
+> フル抽出を通す統合テストは**ローカル限定**（サンプル PDF が存在すれば実行、無ければ
+> `skip`）とし、CI では走らせない。
 
 ---
 
@@ -272,3 +308,13 @@ JPX週次PDF(syumatsu*.pdf)  →  extract_pdf.py(PyMuPDF)  →  専用パーサ
 | P2 | セクター売買代金「合計」は大型業種に寄る | §3.3「加重方針」新設。全成分を**業種内相対値**に正規化しランキングを規模中立に |
 | P2 | `flowDominance` の命名が強すぎる | 内部名・UI とも **`上昇売買代金シェア`(`up_turnover_share`)** に変更（§4B.1） |
 | 所感 | 「中身を読めたので再現」に寄りすぎ | §1 で **「参考UI + 独自の指標・閾値・検証」**のスタンスに全体を再フレーム |
+
+### 2巡目（rev3）
+
+| # | 指摘 | 対応 |
+|---|---|---|
+| P1 | `margin.parquet` の記述が実体 `data/margin/{YYYYMMDD}.parquet` と不整合 | §5.5・§6 を **「最新アーカイブを探す」**に統一修正 |
+| P1 | `margin_service` が `fitz` を直接 import しない方針を明記すべき | §5.3 新設。`extract_pdf.py` に **`extract_text()` 関数を公開**し margin_service が import する方針に確定 |
+| P1 | `requirements.txt` に PyMuPDF が無い（`pypdf` のみ・PDFルールと逆） | §5.4 で **`pymupdf` 追加を必須ステップ**として明記（実コードで不在を確認） |
+| P2 | `data/margin/` が `.gitignore` 未記載（`data/*.parquet` は直下のみ） | §5.4 で **`data/margin/` を .gitignore に追加**を必須ステップ化（実 .gitignore で確認） |
+| P2 | パーサテストのサンプル PDF の置き場所が未定 | §8 で **`tests/fixtures/margin_sample.txt`（抽出済みテキスト・軽量・Git管理）** に確定。フル PDF 抽出はローカル限定 skip |
