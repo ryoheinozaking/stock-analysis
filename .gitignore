@@ -28,6 +28,7 @@ data/edinetdb_cache/
 data/da_cache/
 data/diagnose_value/
 data/diagnose_growth/
+data/margin/
 
 # バックアップ・アーカイブ
 backup/
