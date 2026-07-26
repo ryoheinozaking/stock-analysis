@@ -59,3 +59,29 @@ def load_sector_daily(
     # 構成銘柄数が閾値未満の業種は除外
     out = out[out["n"] >= min_stocks].reset_index(drop=True)
     return out
+
+
+def compute_volume_surge(
+    sector_daily: pd.DataFrame,
+    median_days: int = TURNOVER_MEDIAN_DAYS,
+) -> pd.DataFrame:
+    """各業種の turnover_ratio = 最終日売買代金 ÷ 直近 median_days 日の中央値。降順。
+
+    Returns 列: sector, turnover_ratio, va, daily_return_pct
+    """
+    rows = []
+    for sector, g in sector_daily.sort_values("Date").groupby("sector"):
+        va = g["va"].to_numpy(dtype="float64")
+        if len(va) < 2:
+            continue
+        hist = va[-(median_days + 1):-1] if len(va) > median_days else va[:-1]
+        med = float(np.median(hist)) if len(hist) else np.nan
+        ratio = float(va[-1] / med) if med and med > 0 else np.nan
+        rows.append({
+            "sector": sector,
+            "turnover_ratio": ratio,
+            "va": float(va[-1]),
+            "daily_return_pct": float(g["ret"].iloc[-1] * 100.0),
+        })
+    out = pd.DataFrame(rows).sort_values("turnover_ratio", ascending=False)
+    return out.reset_index(drop=True)

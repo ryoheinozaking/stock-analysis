@@ -50,3 +50,15 @@ def test_load_sector_daily_split_scale_safe():
     day3 = out[(out["Date"] == "2026-01-07") & (out["sector"] == "X")].iloc[0]
     # 分割調整後の実質: 220相当→240相当なので +9.09%。生の 220→120 の -45% ではない。
     assert day3["ret"] > 0.05
+
+
+def test_compute_volume_surge_ratio():
+    # 業種X: 過去5日 va=100 一定 → 中央値100。最終日 va=270 → ratio 2.7。
+    rows = []
+    for i, d in enumerate(["01-01", "01-02", "01-03", "01-04", "01-05"]):
+        va = 100.0 if d != "01-05" else 270.0
+        rows.append((f"2026-{d}", "X", 0.0, va, 5, 0.5))
+    sd = pd.DataFrame(rows, columns=["Date", "sector", "ret", "va", "n", "up_ratio"])
+    out = rs.compute_volume_surge(sd, median_days=4)
+    row = out[out["sector"] == "X"].iloc[0]
+    assert row["turnover_ratio"] == pytest.approx(2.7)
