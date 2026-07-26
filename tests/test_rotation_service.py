@@ -87,3 +87,18 @@ def test_compute_freshness_rising_vs_fading():
     # B は週ランクが月ランクより下位 → rank_delta 正 → 失速
     assert b["rank_delta"] > 0
     assert b["category"] == "falling"
+
+
+def test_compute_fund_flow_score_bounds_and_components():
+    # 3業種、最終日に売買代金が急増しbreadthも高い業種が高スコアになること。
+    rows = []
+    for s, pace_last, up in [("A", 300.0, 0.9), ("B", 100.0, 0.5), ("C", 50.0, 0.1)]:
+        for i in range(20):
+            va = 100.0 if i < 19 else pace_last
+            ret = 0.02 if (i == 19 and up > 0.5) else 0.0
+            rows.append((f"2026-03-{i+1:02d}", s, ret, va, 10, up))
+    sd = pd.DataFrame(rows, columns=["Date", "sector", "ret", "va", "n", "up_ratio"])
+    out = rs.compute_fund_flow(sd)
+    assert out["score"].between(0, 100).all()
+    # A が最高スコア
+    assert out.sort_values("score", ascending=False).iloc[0]["sector"] == "A"

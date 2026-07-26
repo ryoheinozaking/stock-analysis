@@ -134,3 +134,57 @@ def compute_freshness(
 
     out["category"] = out.apply(_classify, axis=1)
     return out.sort_values("week_rank").reset_index(drop=True)
+
+
+def _minmax_0_100(s: pd.Series) -> pd.Series:
+    lo, hi = s.min(), s.max()
+    if hi <= lo:
+        return pd.Series(50.0, index=s.index)
+    return (s - lo) / (hi - lo) * 100.0
+
+
+def compute_fund_flow(
+    sector_daily: pd.DataFrame,
+    median_days: int = TURNOVER_MEDIAN_DAYS,
+) -> pd.DataFrame:
+    """資金流入5成分を業種内相対で正規化し合成スコア(0-100)を返す。
+
+    成分: turnover_pace / persistence / flow_return / breadth / up_turnover_share
+    ※ up_turnover_share は sector_daily に上昇売買代金列が無い場合 up_ratio で代替。
+    Returns 列: sector, score, turnover_pace, persistence, flow_return,
+                breadth, up_turnover_share
+    """
+    rows = []
+    for sector, g in sector_daily.sort_values("Date").groupby("sector"):
+        va = g["va"].to_numpy(dtype="float64")
+        hist = va[-(median_days + 1):-1] if len(va) > median_days else va[:-1]
+        avg = float(np.mean(hist)) if len(hist) else np.nan
+        pace = float(va[-1] / avg) if avg and avg > 0 else 1.0
+        # 持続日数: 直近から連続で平均を上回った日数
+        persistence = 0
+        if avg and avg > 0:
+            for v in va[::-1]:
+                if v > avg:
+                    persistence += 1
+                else:
+                    break
+        rows.append({
+            "sector": sector,
+            "turnover_pace": pace,
+            "persistence": float(persistence),
+            "flow_return": float(g["ret"].iloc[-1]),
+            "breadth": float(g["up_ratio"].iloc[-1]),
+            "up_turnover_share": float(g["up_ratio"].iloc[-1]),
+        })
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    comp = pd.DataFrame({
+        "c_pace": _minmax_0_100(out["turnover_pace"]),
+        "c_persist": _minmax_0_100(out["persistence"]),
+        "c_return": _minmax_0_100(out["flow_return"]),
+        "c_breadth": _minmax_0_100(out["breadth"]),
+        "c_share": _minmax_0_100(out["up_turnover_share"]),
+    })
+    out["score"] = comp.mean(axis=1)
+    return out.sort_values("score", ascending=False).reset_index(drop=True)
