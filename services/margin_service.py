@@ -81,20 +81,19 @@ def download_margin_pdf(as_of_yyyymmdd: str, dest_path: str) -> str:
     """JPX 週次信用 PDF をダウンロードして dest_path に保存。
 
     URL 規則: .../margin/tvdivq0000001rnl-att/syumatsu{YYYYMMDD}00.pdf
-    ※ 恒久運用は Streamlit「データ更新」から呼ぶ。SSL 失効チェックは無効化。
+    ※ 恒久運用は Streamlit「データ更新」から呼ぶ。
+    TLS 証明書検証はデフォルト（有効）のまま。OS の証明書ストアで JPX の
+    証明書チェーンは検証できることを確認済み（検証を無効化しない）。
     """
     import urllib.request
-    import ssl
 
     url = (
         "https://www.jpx.co.jp/markets/statistics-equities/margin/"
         f"tvdivq0000001rnl-att/syumatsu{as_of_yyyymmdd}00.pdf"
     )
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, context=ctx, timeout=60) as r:
+    # 既定の検証付き SSL コンテキストを使用（context 未指定 = 検証有効）
+    with urllib.request.urlopen(req, timeout=60) as r:
         data = r.read()
     with open(dest_path, "wb") as f:
         f.write(data)
