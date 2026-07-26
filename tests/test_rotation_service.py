@@ -135,3 +135,24 @@ def test_compute_stock_signals_uses_sepa_columns():
     assert bool(a["new_high"]) is True
     assert a["from_52w_high_pct"] == pytest.approx(-2.0)
     assert a["from_52w_low_pct"] == pytest.approx(40.0)
+
+
+def test_compute_rankings_self_rank_within_sector():
+    sc = pd.DataFrame([
+        {"code": "0001", "company_name": "A", "sector": "X",
+         "score": 90, "mom_signal": "strong", "latest_volume": 100,
+         "avg_volume": 50, "close": 110, "MA25": 100},
+        {"code": "0002", "company_name": "B", "sector": "X",
+         "score": 70, "mom_signal": "", "latest_volume": 80,
+         "avg_volume": 80, "close": 90, "MA25": 100},
+        {"code": "0003", "company_name": "C", "sector": "Y",
+         "score": 80, "mom_signal": "strong", "latest_volume": 300,
+         "avg_volume": 60, "close": 120, "MA25": 100},
+    ])
+    out = rs.compute_rankings(sc)
+    assert set(out.keys()) >= {"momentum", "volume_surge"}
+    mom = out["momentum"]
+    # 業種X内で score 最上位の 0001 は self_rank=1
+    a = mom[mom["code"] == "0001"].iloc[0]
+    assert a["self_rank"] == 1
+    assert a["self_rank_total"] == 2  # 業種Xは2銘柄

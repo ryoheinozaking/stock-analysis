@@ -218,3 +218,33 @@ def compute_stock_signals(stock_cache: pd.DataFrame) -> pd.DataFrame:
     cols = ["code", "code_4", "company_name", "sector", "close", "RSI",
             "ma25_dev_pct", "from_52w_high_pct", "from_52w_low_pct", "new_high"]
     return df[[c for c in cols if c in df.columns]].reset_index(drop=True)
+
+
+def _with_self_rank(df: pd.DataFrame, by: str) -> pd.DataFrame:
+    df = df.copy()
+    df["self_rank"] = (
+        df.groupby("sector")[by].rank(ascending=False, method="min").astype(int)
+    )
+    df["self_rank_total"] = df.groupby("sector")["sector"].transform("size")
+    return df
+
+
+def compute_rankings(stock_cache: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+    """5種のランキングを返す。各行に業種内順位 self_rank / self_rank_total 付き。
+
+    keys: momentum, volume_surge（値上がり/値下がりは close/MA25 と将来の日次騰落で拡張）
+    """
+    df = stock_cache.copy()
+    df["score"] = pd.to_numeric(df.get("score"), errors="coerce")
+    df["vol_ratio"] = (
+        pd.to_numeric(df.get("latest_volume"), errors="coerce")
+        / pd.to_numeric(df.get("avg_volume"), errors="coerce")
+    )
+    rankings: Dict[str, pd.DataFrame] = {}
+    rankings["momentum"] = _with_self_rank(
+        df.sort_values("score", ascending=False), by="score"
+    ).reset_index(drop=True)
+    rankings["volume_surge"] = _with_self_rank(
+        df.sort_values("vol_ratio", ascending=False), by="vol_ratio"
+    ).reset_index(drop=True)
+    return rankings
