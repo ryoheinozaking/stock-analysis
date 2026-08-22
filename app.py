@@ -37,8 +37,8 @@ st.title("株式スクリーナー")
 st.markdown("J-Quants API v2 を活用した日本株スクリーニング・分析ツールです。")
 st.markdown("---")
 
-# 4ページへのリンクカード
-col1, col2, col3, col4, col5 = st.columns(5)
+# 各ページへのリンクカード（行あたり CARDS_PER_ROW 枚）
+CARDS_PER_ROW = 3
 
 CARD_STYLE = (
     "background:#1e293b; border-radius:12px; padding:24px;"
@@ -64,18 +64,22 @@ cards = [
      "SBI証券のCSVをインポートして保有状況・含み損益・セクター分散をグラフで確認できます。"),
     ("pages/6_trade_log.py", "トレードを記録", "#2e7d32", "📓", "トレードログ",
      "実トレードを記録・集計し、戦略別勝率・RSI別成績など自己分析データを蓄積します。"),
+    ("pages/9_sector_rotation.py", "セクター回転を見る", "#f43f5e", "🔄", "セクター回転検知",
+     "S33業種別の資金流入・鮮度・出来高急増で回転を検知し、JPX週次信用残で需給変化を確認できます。"),
 ]
 
-for col, (page, label, color, icon, title, desc) in zip([col1, col2, col3, col4, col5], cards):
-    with col:
-        st.markdown(f"""
-        <div style="{CARD_STYLE.format(color=color)}">
-            <div style="{ICON_STYLE.format(color=color)}">{icon}</div>
-            <h3 style="{TITLE_STYLE}">{title}</h3>
-            <p style="{DESC_STYLE}">{desc}</p>
-        </div>
-        """, unsafe_allow_html=True)
-        st.page_link(page, label=label)
+for _row_start in range(0, len(cards), CARDS_PER_ROW):
+    _row = cards[_row_start:_row_start + CARDS_PER_ROW]
+    for col, (page, label, color, icon, title, desc) in zip(st.columns(CARDS_PER_ROW), _row):
+        with col:
+            st.markdown(f"""
+            <div style="{CARD_STYLE.format(color=color)}">
+                <div style="{ICON_STYLE.format(color=color)}">{icon}</div>
+                <h3 style="{TITLE_STYLE}">{title}</h3>
+                <p style="{DESC_STYLE}">{desc}</p>
+            </div>
+            """, unsafe_allow_html=True)
+            st.page_link(page, label=label)
 
 st.markdown("---")
 st.markdown("""
@@ -85,6 +89,7 @@ st.markdown("""
 3. **適時開示**: 最新ニュース・特定日付・特定銘柄の開示情報を確認
 4. **ポートフォリオ**: SBI証券CSVをインポートして保有状況を可視化
 5. **トレードログ**: 実トレードを記録・集計して自己分析データを蓄積
+6. **セクター回転検知**: 業種別の資金流入・温度と週次信用残から市場の回転を確認
 
 ### データソース
 - **株価・財務データ**: [J-Quants API v2](https://jpx-jquants.com/)
@@ -101,6 +106,7 @@ st.sidebar.page_link("pages/2_stock_detail.py", label="銘柄詳細", icon="📈
 st.sidebar.page_link("pages/3_disclosures.py", label="適時開示", icon="📰")
 st.sidebar.page_link("pages/4_portfolio.py", label="ポートフォリオ", icon="💹")
 st.sidebar.page_link("pages/6_trade_log.py", label="トレードログ", icon="📓")
+st.sidebar.page_link("pages/9_sector_rotation.py", label="セクター回転", icon="🔄")
 
 if st.session_state.get("selected_code"):
     st.sidebar.markdown("---")

@@ -107,9 +107,10 @@ stock_analysis/
 │   ├── 2_stock_detail.py         # 銘柄詳細（チャート・財務・適時開示タブ）
 │   ├── 3_disclosures.py          # 適時開示（3タブ: 一覧 / AI要約フィルタ / 要約済み一覧）
 │   ├── 4_portfolio.py            # ポートフォリオ（SBI CSV読み込み・損益・ヒートマップ）
-│   ├── 5_portfolio_analysis.py   # AI分析（Claude APIによる総評・銘柄別売買提案）
+│   ├── 6_trade_log.py            # トレードログ（実トレード記録・戦略別勝率集計）
 │   ├── 7_pipeline_report.py      # パイプラインレポート（成長株/バリュー株モード切替）
-│   └── 8_backtest_value.py       # バリュー株モード バックテスト（クロスセクション）
+│   ├── 8_backtest_value.py       # バリュー株モード バックテスト（クロスセクション）
+│   └── 9_sector_rotation.py      # セクター回転検知（温度・ランキング・信用需給3タブ）
 │
 ├── services/
 │   ├── jquants_service.py        # J-Quants API v2 ラッパー（@st.cache_data付き）
@@ -119,7 +120,9 @@ stock_analysis/
 │   ├── ir_service.py             # 適時開示フィルタリング（3層分類）・PDF抽出
 │   ├── portfolio_service.py      # SBI証券CSV パーサー（CP932デコード）
 │   ├── pipeline_service.py       # パイプライン本体（ハードフィルタ→スコアリング→Claude分析）
-│   └── backtest_value_service.py # バリュー株バックテスト（過去スナップショット再現）
+│   ├── backtest_value_service.py # バリュー株バックテスト（過去スナップショット再現）
+│   ├── rotation_service.py       # セクター回転（日次系列・出来高急増・鮮度・資金流入・温度）
+│   └── margin_service.py         # JPX週次信用残（PDF DL・パース・週次アーカイブ）
 │
 ├── components/
 │   ├── chart.py                  # Plotly OHLCVチャート（MA・BB・MACD・RSI・一目均衡表等）
@@ -134,6 +137,7 @@ stock_analysis/
 │   ├── backtest_prices/          # バックテスト用OHLCVキャッシュ（銘柄別CSV）
 │   ├── fins_cache/               # 決算データキャッシュ（銘柄別CSV）
 │   ├── da_cache/                 # 深層分析ヘルパー出力JSON（Claude Codeが読む）
+│   ├── margin/                   # JPX週次信用残アーカイブ（YYYYMMDD.parquet・Git管理外）
 │   ├── backtest_records.csv      # バックテスト詳細トレード記録
 │   └── backtest_summary.csv      # バックテスト集計統計
 │
@@ -213,6 +217,7 @@ Claude Code の `deep-analysis-jp` スキルが使う J-Quants データ取得�
 | `ai_analysis.json` | JSON | AI分析実行時（オンデマンド） | 保存済みだが次回分析への自動注入なし（課題） |
 | `backtest_prices/` | CSV群 | バックテスト実行時 | 銘柄別ファイル |
 | `fins_cache/` | CSV群 | モメンタムスクリーナー更新時 | 決算データ全件上書き |
+| `data/margin/` | parquet群 | セクター回転ページの信用データ更新ボタン | JPX公式PDFを週次アーカイブ・直近5週保持 |
 | `@st.cache_data` | メモリ | セッション内 | APIレスポンスの一時キャッシュ |
 
 ---
@@ -226,6 +231,7 @@ Claude Code の `deep-analysis-jp` スキルが使う J-Quants データ取得�
 | Claude API | `api.anthropic.com` | `ANTHROPIC_API_KEY` | AI分析・IR要約 |
 | SBI証券CSV | ローカル | 不要 | ポートフォリオ保有データ |
 | TDnet PDF | `document_url`経由 | 不要 | 決算短信PDF本文 |
+| JPX 信用残 | `jpx.co.jp`（週次PDF） | 不要 | 銘柄別信用取引残高（セクター回転の需給） |
 
 ### Claude API 設定
 - モデル: `claude-haiku-4-5-20251001`
