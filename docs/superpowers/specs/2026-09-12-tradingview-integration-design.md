@@ -330,7 +330,11 @@ TradingView の 2026-09-09 のバーの終値 3,909 が、J-Quants の同日終�
    パネルは開いている（`was_open: true`）のに失敗するため、TradingView 3.4.1 または
    日本語 UI に実装が追随していないと判断。`alert_list` / `layout_list` が `internal_api` 経由で
    成功するのに対し、`watchlist_get` だけが DOM 探索実装であることが原因と見られる。
-   退避は手動で行う（ウォッチリストを開く → アドバンスドビュー → リストを TXT でダウンロード）
+   退避は手動で行う（ウォッチリストを開く → アドバンスドビュー → リストを TXT でダウンロード）。
+   手動エクスポートは成功し、「00_ポジション」8 銘柄を `data/tradingview/backup/` に退避済み。
+   なお **A-2 でウォッチリストへの書き込み（`watchlist_add_bulk`）を使う構想があるが、
+   読み取りが DOM 依存で失敗している以上、書き込みも同じ実装なら動かない可能性が高い**。
+   A-2 着手時に最初に検証すべき項目
 
 5. **`tv_health_check` の更新チェックが誤った SHA を返す**。
    `src/core/health.js:17` の `execSync('git rev-parse HEAD')` が cwd を指定していないため、
