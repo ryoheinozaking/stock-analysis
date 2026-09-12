@@ -269,6 +269,87 @@ A-1 は中止し A-0 で得た知見のみ記録する。
 - CDP ポート 9222 が開いている間、ローカルの任意プロセスから TradingView を操作可能になる
 - TradingView のアップデートで内部 API が変わり、動作しなくなる可能性がある（README も警告）
 
+## A-0 実施結果（2026-09-12）
+
+### 判定表
+
+| # | 判定項目 | 結果 | 備考 |
+|---|---|---|---|
+| 1 | MSIX 環境での起動 | **OK** | フォールバック不要。`WindowsApps` から直接起動できた。330MB のローカルコピーは作られていない |
+| 2 | CDP バインド | **OK** | `127.0.0.1:9222` のみで待ち受け。外部公開なし |
+| 3 | 指標値の取得 | **OK** | 下記参照 |
+| 4 | Pine 描画の取得 | **NG** | 保有インジケーターが `line.new()` 等を使っていないため全て空。代替あり（下記） |
+| 5 | CLI の非対話出力 | **OK** | デフォルトで JSON を stdout に返す。`--json` 不要。パイプでパース可能 |
+| 6 | 起動済み TradingView の復旧 | **OK** | `taskkill` 後もログイン状態・レイアウト・描画・ウォッチリストが保持された |
+| 7 | CDP 終了後の復旧 | **OK** | ポート閉鎖を確認。通常起動で問題なし（利用者確認済み） |
+| 8 | 再現性 | **OK** | SHA `c05b8f5` 固定。ただし `package-lock.json` は `npm audit fix` 適用済み（`src/` は無変更） |
+
+**撤退条件には該当せず。A-1 へ進める。**
+
+### 取得できたデータ
+
+`data_get_study_values` で以下が数値として読めた（TSE_DLY:5016 / 日足）。
+
+| インジケーター | 取得値 |
+|---|---|
+| Supertrend | Up Trend 3,299.49 / Supertrend 3,668.75 |
+| MA/Ichimoku/SAR/BB | 移動平均 3,765 / 3,767 / 3,910 / 3,481、転換線 3,724、基準線 3,910、遅行 3,695、先行1 3,817、先行2 3,868、SAR 3,512、±3σ 4,117 / 3,418 |
+| RSI | 47.24 / RSI-based MA 48.37 |
+| MACD | Histogram 10.1 / MACD −26.8 / Signal −37.0 |
+
+日本語ラベルのカスタム複合インジケーター（一目均衡表の全要素を含む）がそのまま読めた点が収穫。
+
+`draw_list` → `draw_get_properties` で手描きの描画も価格付きで取れた。
+
+- ray `53kbld`: 1,664 円（2025-12-18）→ 3,312 円（2026-03-31）、右に延長
+- この 3,312 は `alert_list` で取れた設定済みアラートの価格と一致していた
+
+`alert_list` と `layout_list` は `internal_api` 経由で正常動作。
+
+### J-Quants との突き合わせ
+
+TradingView の 2026-09-09 のバーの終値 3,909 が、J-Quants の同日終値 3,909.0 と**完全一致**。
+分割調整のスケールずれもない。
+
+一方で **J-Quants の `prices.parquet` は 2026-09-09 で止まっており、TradingView の方が
+2 営業日新しかった**（2026-09-11 まで保持）。parquet は手動更新のため、
+鮮度では TradingView が勝つ場面がある。
+
+### 取得できなかったもの・制約
+
+1. **Pine 描画系 4 ツールは全て空**（`study_count: 0`）。
+   画面の Buy / Sell ラベルは Supertrend の `plotshape()` 由来で、`label.new()` ではないため。
+   ツールの不具合ではなく、利用者のインジケーター構成がこの API を使っていないことによる
+
+2. **`data_get_study_values` の `inputs` に巨大な暗号化ブロブが混入する**。
+   1 回の呼び出しで大量のトークンを消費した。A-1 では `values` のみを抽出する前処理が必須
+
+3. **SQZMOM の値が一部欠落**。画面表示は `−91.0` と `0.0` の 2 値だが、ツールは `0.0` のみ返す
+
+4. **`watchlist_get` が動作しない**（`Watchlist button not found`）。MCP・CLI とも同じ。
+   パネルは開いている（`was_open: true`）のに失敗するため、TradingView 3.4.1 または
+   日本語 UI に実装が追随していないと判断。`alert_list` / `layout_list` が `internal_api` 経由で
+   成功するのに対し、`watchlist_get` だけが DOM 探索実装であることが原因と見られる。
+   退避は手動で行う（ウォッチリストを開く → アドバンスドビュー → リストを TXT でダウンロード）
+
+5. **`tv_health_check` の更新チェックが誤った SHA を返す**。
+   `src/core/health.js:17` の `execSync('git rev-parse HEAD')` が cwd を指定していないため、
+   MCP サーバーとして起動されると Claude Code の作業ディレクトリ（この場合 stock_analysis）の
+   リポジトリを見てしまう。CLI から実行すれば正しい値が返る。
+   `tv_update` を使わない方針のため実害はないが、`update_available` の表示は信用しないこと
+
+6. **フィードは `TSE_DLY`**（20 分遅延）であることが確定。日足利用では影響しない
+
+### A-1 への申し送り
+
+- **実装形態は案 2（CLI 経由のヘルパースクリプト）が選択可能**。CLI は全機能をカバーし、
+  デフォルトで JSON を stdout に返すため、`scripts/deep_analysis_helper.py` と同じ形で
+  Python から `subprocess` 呼び出しできる
+- 取得すべきは `values` のみ。`inputs` は捨てる
+- Pine 描画系は使わない。代わりに `data_get_study_values` ＋ `draw_list` / `draw_get_properties` ＋ `alert_list`
+- J-Quants parquet が古い場合、TradingView の方が新しい終値を持つ。
+  深層分析で両者を併記する際は as_of の差を明示すること
+
 ## A-1 方向性（A-0 の結果で確定）
 
 深層分析レポートの **4.5 テクニカル状況** が統合先。
