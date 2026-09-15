@@ -506,6 +506,19 @@ split_factor 適用で正しい**（完了済み期の実績は遡及修正さ�
 REIT の 6ヶ月決算同士は補正しない。適用: 成長率・eps_growth・op_trend（div_trend は対象外）。
 回帰テスト: `tests/test_fins_freshness.py`。
 
+#### バリュエーション指標 API（/v2/equities/valuation、2026-09-15 導入）
+
+J-Quants が決算短信と株価から日次で算出する EPS（実績=直近12ヶ月 / 予想=進行期の会社予想）・
+BPS・ROE・PER・PBR・時価総額（**自己株控除後の株数**、百万円）。全プラン対応、日次 16:30 頃更新、
+決算短信は開示の翌営業日から反映。ROE は小数（0.231 = 23.1%）。売上・配当は含まない。
+- 取得: `batch_service.update_valuation()` → `data/valuation.parquet`（データ更新ボタンで実行。
+  株価と同じ「最終日の翌日〜今日」の日付ループ。失敗日で止めて次回そこから取り直す。初回は直近45日）
+- 用途（現状）: 自前計算の答え合わせのみ。`scripts/audit_valuation.py` が自前（stock_cache の
+  PER/PBR/ROE・パイプラインの時価総額）と突き合わせ、ずれを「自己株の定義差 / 自己資本の時点差 /
+  分割の調整ずれ / 反映日差 / 要調査」に分類（`services/valuation_audit.py`）。
+- **パイプラインの PER/PBR を JPX 値へ切り替える前に、バックテストの診断をやり直すこと**
+  （現行配点は自前の PBR/PER で検証したもの。株数・自己資本の定義が違う）
+
 ---
 
 ## TDnet Yanoshin API（アプリ用）
