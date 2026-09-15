@@ -29,7 +29,10 @@ from services.split_adjust import (
     normalize_close, normalize_volume, normalize_high, split_factor_between,
 )
 from services.governance_score import calc_governance_score_for_df, get_activist_info
-from services.fins_utils import filter_fy_statements, dedupe_same_fy
+from services.fins_utils import (
+    filter_fy_statements, dedupe_same_fy, disclosure_freshness, find_disclosure_gaps,
+    period_length_scale,
+)
 
 _ROOT             = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _STOCK_CACHE_PATH = os.path.join(_ROOT, "data", "stock_cache.parquet")
@@ -140,9 +143,53 @@ def _load_fins_fy() -> pd.DataFrame:
     return fy.sort_values(["Code", "DiscDate"], ascending=[True, False])
 
 
+# レポートで「開示ゼロの取引日」を点検する期間（暦日）
+FRESHNESS_GAP_WINDOW_DAYS = 90
+
+
+def _build_fins_freshness(prices_df: pd.DataFrame):
+    """fins_cache の鮮度を返す: (銘柄別 DataFrame, キャッシュ全体のサマリ dict)。
+
+    銘柄別: 最新開示日・最新決算短信日・次の決算短信が期限を過ぎても未収録か（fins_overdue）
+    全体:   直近 FRESHNESS_GAP_WINDOW_DAYS 日で開示が 1 件もない取引日（取りこぼしの兆候）
+    鮮度チェックは補助情報のため、失敗してもパイプライン本体は止めない（error に理由を入れる）。
+    """
+    try:
+        fins = pd.read_parquet(
+            _FINS_CACHE_PATH,
+            columns=["Code", "DiscDate", "DocType", "CurPerType", "CurPerSt", "CurPerEn"],
+        )
+        trading = pd.to_datetime(pd.Series(prices_df["Date"].unique()), errors="coerce").dropna()
+        as_of = trading.max().normalize() if not trading.empty else pd.Timestamp.today().normalize()
+        per_code = disclosure_freshness(fins, as_of)
+        gaps = find_disclosure_gaps(
+            fins["DiscDate"].unique(), trading,
+            since=as_of - pd.Timedelta(days=FRESHNESS_GAP_WINDOW_DAYS), until=as_of,
+        )
+        latest = pd.to_datetime(fins["DiscDate"], errors="coerce").max()
+        summary = {
+            "as_of":            as_of.strftime("%Y-%m-%d"),
+            "window_days":      FRESHNESS_GAP_WINDOW_DAYS,
+            "latest_disc_date": latest.strftime("%Y-%m-%d") if pd.notna(latest) else None,
+            "gap_dates":        [d.strftime("%Y-%m-%d") for d in gaps],
+        }
+        return per_code, summary
+    except Exception as e:
+        return pd.DataFrame(), {"error": str(e)}
+
+
 # ════════════════════════════════════════════════════════════════════════
 #  ① ハードフィルタ
 # ════════════════════════════════════════════════════════════════════════
+
+def _fy_period_scale(newer, older) -> float:
+    """newer 期のフロー値（EPS・営業益）を older 期の期間長ベースに揃える係数。
+
+    決算期変更で期間長が違う FY 同士の比較用（例: 325A の 7ヶ月決算。fins_utils 参照）。
+    """
+    return period_length_scale(newer.get("CurFYSt"), newer.get("CurFYEn"),
+                               older.get("CurFYSt"), older.get("CurFYEn"))
+
 
 def _build_fins_metrics(fins_fy: pd.DataFrame, prices_df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -177,6 +224,8 @@ def _build_fins_metrics(fins_fy: pd.DataFrame, prices_df: pd.DataFrame) -> pd.Da
 
         eps_g     = np.nan
         op_margin = np.nan
+        # 今期 → 前期の期間長ベースに揃える係数（通常の 12ヶ月同士は 1.0）
+        scale_p1  = _fy_period_scale(curr, grp.iloc[1]) if len(grp) >= 2 else 1.0
 
         if len(grp) >= 2:
             prev  = grp.iloc[1]
@@ -187,7 +236,7 @@ def _build_fins_metrics(fins_fy: pd.DataFrame, prices_df: pd.DataFrame) -> pd.Da
                        if (cp is not None and pd.notna(disc_prev) and last_date is not None) else 1.0)
             # 両者を末尾日スケールに正規化してから比較
             if pd.notna(eps_c) and pd.notna(eps_p) and eps_p != 0:
-                eps_c_n = eps_c * sf_curr
+                eps_c_n = eps_c * sf_curr * scale_p1
                 eps_p_n = eps_p * sf_prev
                 if eps_p_n != 0:
                     eps_g = (eps_c_n - eps_p_n) / abs(eps_p_n) * 100
@@ -234,14 +283,15 @@ def _build_fins_metrics(fins_fy: pd.DataFrame, prices_df: pd.DataFrame) -> pd.Da
         op_curr = pd.to_numeric(curr.get("OP"), errors="coerce")
         if len(grp) >= 2 and pd.notna(op_curr):
             op_prev1 = pd.to_numeric(grp.iloc[1].get("OP"), errors="coerce")
-            if pd.notna(op_prev1) and op_prev1 > 0 and op_curr > op_prev1:
+            if pd.notna(op_prev1) and op_prev1 > 0 and op_curr * scale_p1 > op_prev1:
                 op_trend = 1
                 if len(grp) >= 3:
                     op_prev2 = pd.to_numeric(grp.iloc[2].get("OP"), errors="coerce")
                     if pd.notna(op_prev2) and op_prev2 > 0:
-                        if op_prev1 > op_prev2:
+                        op_prev1_n = op_prev1 * _fy_period_scale(grp.iloc[1], grp.iloc[2])
+                        if op_prev1_n > op_prev2:
                             op_trend = 2       # 2期連続増加
-                        elif op_prev1 < op_prev2:
+                        elif op_prev1_n < op_prev2:
                             op_turnaround = True  # 前期減益→今期回復（V字転換）
 
         # 配当性向（DivAnn ÷ EPS × 100）
@@ -262,6 +312,7 @@ def _build_fins_metrics(fins_fy: pd.DataFrame, prices_df: pd.DataFrame) -> pd.Da
             "op_trend":       op_trend,
             "op_turnaround":  op_turnaround,
             "payout_ratio":   payout_ratio,
+            "fy_irregular":   scale_p1 != 1.0,   # 直近2期の期間長が違う（決算期変更）
         })
 
     return pd.DataFrame(rows)
@@ -1193,7 +1244,7 @@ def run_pipeline(use_claude: bool = True, progress_callback=None, mode: str = "g
         return {
             "filtered": filtered, "scored": filtered,
             "top10": filtered, "ai_analysis": None,
-            "mode": mode,
+            "mode": mode, "fins_freshness": None,
             "stats": {"total": len(stock_df), "filtered": 0, "top10": 0},
         }
 
@@ -1208,6 +1259,12 @@ def run_pipeline(use_claude: bool = True, progress_callback=None, mode: str = "g
 
     _cb("売買シグナル計算中...")
     scored = calc_trade_signals(scored, mode=mode)
+
+    _cb("財務データの鮮度を確認中...")
+    fins_fresh, fins_fresh_summary = _build_fins_freshness(prices_df)
+    if not fins_fresh.empty:
+        scored = scored.merge(fins_fresh, on="code", how="left")
+        scored["fins_overdue"] = scored["fins_overdue"].fillna(False).astype(bool)
 
     _cb("地合いフィルター計算中...")
     market = calc_market_condition(prices_df)
@@ -1236,6 +1293,7 @@ def run_pipeline(use_claude: bool = True, progress_callback=None, mode: str = "g
         "top10":            top10,
         "ai_analysis":      ai_result,
         "market_condition": market,
+        "fins_freshness":   fins_fresh_summary,
         "mode":             mode,
         "stats": {
             "total":    len(stock_df),

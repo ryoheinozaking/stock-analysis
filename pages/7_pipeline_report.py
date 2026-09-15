@@ -57,6 +57,7 @@ def _save_cache(result: dict) -> None:
         "scored":           scored.to_dict(orient="records") if not scored.empty else [],
         "ai_analysis":      result["ai_analysis"],
         "market_condition": result.get("market_condition"),
+        "fins_freshness":   result.get("fins_freshness"),
     }
     with open(_CACHE_PATH, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, default=str)
@@ -86,6 +87,7 @@ def _load_cache() -> dict:
             "scored":           _restore_df(payload.get("scored", [])),
             "ai_analysis":      payload.get("ai_analysis"),
             "market_condition": payload.get("market_condition"),
+            "fins_freshness":   payload.get("fins_freshness"),
         }
     except Exception:
         return None
@@ -98,6 +100,15 @@ def _fmt(v, decimals=1, suffix="", default="N/A"):
     if v is None or (isinstance(v, float) and np.isnan(v)):
         return default
     return f"{v:.{decimals}f}{suffix}"
+
+
+def _is_true(v) -> bool:
+    """bool / numpy.bool_ / JSON 復元値（"True" 文字列を含む）/ NaN を安全に真偽判定する。"""
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return False
+    if isinstance(v, str):
+        return v.strip().lower() == "true"
+    return bool(v)
 
 
 def _judgment_color(j: str) -> str:
@@ -171,16 +182,27 @@ def _render_scorecard(rank: int, row, ai_stocks: dict, key_prefix: str = "t1", m
 
         d1, d2 = st.columns(2)
         with d1:
+            # 財務データの鮮度（次の決算短信が fins_cache に未収録なら成長率・PER は古い決算ベース）
+            last_stmt  = getattr(row, "last_stmt_date", None)
+            fresh_note = ""
+            if isinstance(last_stmt, str) and last_stmt:
+                fresh_note = f" ／ 最新決算短信 **{last_stmt}**"
+                if _is_true(getattr(row, "fins_overdue", False)):
+                    fresh_note += " ⚠️ **次の決算短信が未収録**"
+            if _is_true(getattr(row, "fy_irregular", False)):
+                fresh_note += " ／ 変則決算期（期間長を補正して比較）"
             if mode == "value":
                 # バリューモードは PER / ROE / 売上成長を補足情報として表示
                 st.caption(
                     f"PER **{_fmt(row.PER, 1, 'x')}** ／ ROE **{_fmt(row.ROE, 1, '%')}** ／ "
                     f"売上成長 **{_fmt(row.rev_growth, 1, '%')}** ／ 利益成長 **{_fmt(row.profit_growth, 1, '%')}**"
+                    + fresh_note
                 )
             else:
                 st.caption(
                     f"売上成長 **{_fmt(row.rev_growth, 1, '%')}** ／ 利益成長 **{_fmt(row.profit_growth, 1, '%')}** ／ "
                     f"PBR **{_fmt(row.PBR, 1, 'x')}**"
+                    + fresh_note
                 )
         with d2:
             detail   = row.tech_detail if isinstance(row.tech_detail, dict) else {}
@@ -724,6 +746,24 @@ if generated_at:
     except Exception:
         pass
 
+# ── 財務データ（fins_cache）の鮮度 ────────────────────────────────────
+fins_fresh = result.get("fins_freshness") or {}
+if fins_fresh.get("error"):
+    st.caption(f"財務データの鮮度チェックに失敗しました: {fins_fresh['error']}")
+gap_dates = fins_fresh.get("gap_dates") or []
+if gap_dates:
+    gap_msg = (
+        f"財務データ（fins_cache）に、開示が1件もない取引日が直近{fins_fresh.get('window_days', 90)}日で"
+        f" **{len(gap_dates)}日** あります（直近: {'、'.join(gap_dates[-5:])}）。"
+    )
+    if len(gap_dates) >= 2:
+        st.warning(
+            "⚠️ " + gap_msg + "決算短信の取りこぼしにより、成長率・PER が古い決算に基づいている可能性があります。"
+            "「スクリーニング」ページの「🔄 データ更新」で欠落日を再取得し、パイプラインを再実行してください。"
+        )
+    else:
+        st.caption(gap_msg + "大納会など実際に開示が無い日の可能性もあります。")
+
 # ── 地合いフィルター ──────────────────────────────────────────────────
 if market:
     state = market.get("state", "")
@@ -755,6 +795,18 @@ if top10.empty:
     st.warning("フィルタ通過銘柄がありませんでした。条件を見直してください。")
     st.stop()
 c4.metric("最高総合スコア", f"{top10['total_score'].iloc[0]:.1f}")
+
+if "fins_overdue" in top10.columns:
+    overdue = top10[top10["fins_overdue"].map(_is_true)]
+    if not overdue.empty:
+        names = "、".join(
+            f"{r.code_4} {r.company_name}（最新決算短信 {r.last_stmt_date}）"
+            for r in overdue.itertuples()
+        )
+        st.warning(
+            f"⚠️ 最終候補のうち {len(overdue)} 銘柄は、次の決算短信の開示期限を過ぎているのに"
+            f"財務データに未収録です: {names}。成長率・PER は古い決算に基づいています。"
+        )
 
 st.divider()
 

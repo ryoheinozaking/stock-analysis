@@ -482,6 +482,30 @@ split_factor 適用で正しい**（完了済み期の実績は遡及修正さ�
 - 予想列（FEPS/FDivAnn 等）を読む場面では予想修正レコードが最新情報を
   持つため、フィルタせず最新レコード（`latest`）から読む（batch_service 方式）
 
+#### ⚠️ fins_cache の取りこぼしと成長率の比較年度ずれ（2026-09-15 修正）
+
+**① 差分取得の取りこぼし**: `update_fins()` は「当日の開示」1日分しか取得しておらず、
+データ更新ボタンを押さなかった日の開示が永久に欠落していた（2026-04-16〜09-15 で
+開示ゼロの取引日が約90日。prices は日付ループなので正常）。J-Quants のプラン遅延ではない。
+- 修正後: 全開示を取得できた最終日を `data/fins_fetch_state.json`（`verified_through`）に記録し、
+  次回はその 2 取引日前から今日までの全取引日を `/fins/summary?date=` で取得（`pagination_key` も辿る）
+- 状態ファイルが無い初回は、既存キャッシュの「開示ゼロの取引日」の密集区間を推定してバックフィル
+- 再発検知: パイプラインレポートに開示ゼロ取引日の警告と、銘柄別の最新決算短信日・
+  「次の決算短信が期限（期末+3ヶ月+50日、REIT 等は+6ヶ月）を過ぎて未収録」の警告を表示
+  （`fins_utils.disclosure_freshness` / `find_disclosure_gaps`）
+
+**② 成長率の比較年度ずれ**: `_compute_metrics` の rev_growth / profit_growth は
+「予想値（FNP/FSales または NxF*）÷ `cf_fy.iloc[1]`（最新確定FYのさらに1期前）」で、
+**2 年分の伸び**を出していた（7803 利益 +586%、135A 売上 +125% など）。
+修正後は `_growth_vs_prior_fy` で「予想の対象年度の直前に終わった FY 実績」と比較する。
+**stock_cache を再構築するまで rev_growth / profit_growth は旧値のまま**。
+なおバックテスト系（backtest_value_service / diagnose_*）は実績 FY 同士の比較で、このずれは無い。
+
+**③ 変則決算期**: 決算期変更で期間長が 5% 超違う FY 同士は、今期のフロー値に
+「前期日数 / 今期日数」を掛けて揃える（`fins_utils.period_length_scale`。325A の 7ヶ月決算など）。
+REIT の 6ヶ月決算同士は補正しない。適用: 成長率・eps_growth・op_trend（div_trend は対象外）。
+回帰テスト: `tests/test_fins_freshness.py`。
+
 ---
 
 ## TDnet Yanoshin API（アプリ用）
