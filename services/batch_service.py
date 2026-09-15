@@ -4,27 +4,38 @@
 
 処理フロー:
   1. update_prices()     : /equities/bars/daily?date= で日付ループ → prices.parquet に差分追記
-  2. update_fins()       : 初回=全銘柄ループ、以降=当日開示分のみ → fins_cache.parquet に差分追記
+  2. update_fins()       : 初回=全銘柄ループ、以降=前回確認済み日〜今日の取引日を日付ループ → fins_cache.parquet に差分追記
   3. build_stock_cache() : parquet読み込み→スコア計算→stock_cache.csv（APIコールなし）
   4. fetch_all_stocks()  : 上記3ステップをまとめた後方互換ラッパー
 """
 
 import os
+import json
 import time
 import requests
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
+from typing import List
 
 from screener import calc_rsi, calc_moving_average, calc_avg_volume, calc_signal_score
 from services.split_adjust import normalize_close, normalize_volume, forecast_per_share_multiplier
-from services.fins_utils import filter_fy_statements, dedupe_same_fy
+from services.fins_utils import (
+    filter_fy_statements, dedupe_same_fy, find_disclosure_gaps, period_length_scale, to_day_list,
+)
 
 _ROOT       = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE_PATH  = os.path.join(_ROOT, "data", "stock_cache.parquet")
 PRICES_PATH = os.path.join(_ROOT, "data", "prices.parquet")
 FINS_PATH   = os.path.join(_ROOT, "data", "fins_cache.parquet")
+FINS_STATE_PATH = os.path.join(_ROOT, "data", "fins_fetch_state.json")
 BASE_URL    = "https://api.jquants.com/v2"
+
+# 財務データ差分更新のパラメータ（update_fins / _plan_fins_fetch_dates）
+FINS_REFETCH_OVERLAP         = 2    # 確認済み日を含めて遡って取り直す取引日数（遅れて登録される開示の対策）
+FINS_BOOTSTRAP_LOOKBACK_DAYS = 400  # 状態ファイルが無いとき、開示ゼロの取引日を探す期間（暦日）
+FINS_BOOTSTRAP_MARGIN        = 5    # 欠落の密集区間から手前に遡る取引日数（当日分だけ取得済みの日の修復）
+FINS_GAP_CLUSTER_WINDOW      = 10   # 次の欠落日がこの取引日数以内なら「密集区間の始まり」とみなす
 
 
 # ─── 共通ユーティリティ ──────────────────────────────────────────
@@ -51,6 +62,19 @@ def _get(endpoint, params=None, retry=3):
         r.raise_for_status()
         return r.json()
     r.raise_for_status()
+
+
+def _get_all(endpoint, params=None):
+    """pagination_key を辿って data を全件取得する（開示の多い日は複数ページに分かれうる）。"""
+    params = dict(params or {})
+    rows = []
+    while True:
+        data = _get(endpoint, params)
+        rows.extend(data.get("data", []))
+        key = data.get("pagination_key")
+        if not key:
+            return rows
+        params["pagination_key"] = key
 
 
 # ─── 既存インターフェース（変更なし） ────────────────────────────
@@ -146,35 +170,133 @@ def _load_fins():
     return pd.DataFrame()
 
 
-def update_fins(progress_callback=None):
+def _load_fins_state() -> dict:
+    """差分更新の状態。verified_through = 全開示を取得できたと確認済みの最終日（YYYY-MM-DD）。"""
+    try:
+        with open(FINS_STATE_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_fins_state(state: dict) -> None:
+    os.makedirs(os.path.dirname(FINS_STATE_PATH), exist_ok=True)
+    with open(FINS_STATE_PATH, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+
+def _load_trading_dates():
+    if not os.path.exists(PRICES_PATH):
+        return []
+    return pd.read_parquet(PRICES_PATH, columns=["Date"])["Date"].unique()
+
+
+def _plan_fins_fetch_dates(disc_dates, trading_dates, today, verified_through=None) -> List[pd.Timestamp]:
+    """
+    差分更新で /fins/summary?date= を取得する日付リスト（昇順）を返す。APIコールなし。
+
+    - verified_through がある場合:
+      その日を含む直近 FINS_REFETCH_OVERLAP 取引日 〜 today の取引日
+    - ない場合（状態ファイル導入前のキャッシュを修復する初回）:
+      直近 FINS_BOOTSTRAP_LOOKBACK_DAYS 日で「開示ゼロの取引日」を探し、欠落が密集し始めた日の
+      FINS_BOOTSTRAP_MARGIN 取引日前 〜 today を取得する（ボタンを押した日は当日分しか
+      取れていない可能性があるため、区間内は開示の有無に関わらず取り直す）。
+      密集区間より前の孤立した欠落日（大納会など）はその日だけ取り直す。
+    prices の最終取引日より後の平日（当日の価格が未取得など）も取得対象に含める。
+    """
+    today = pd.Timestamp(today).normalize()
+    td = [d for d in to_day_list(trading_dates) if d <= today]
+    td_set = set(td)
+    last_td = td[-1] if td else None
+
+    extra = []
+    if verified_through:
+        vt = pd.Timestamp(verified_through).normalize()
+        prior = [d for d in td if d <= vt]
+        if len(prior) >= FINS_REFETCH_OVERLAP:
+            start = prior[-FINS_REFETCH_OVERLAP]
+        else:
+            start = prior[0] if prior else vt
+    else:
+        since = today - pd.Timedelta(days=FINS_BOOTSTRAP_LOOKBACK_DAYS)
+        gaps = find_disclosure_gaps(disc_dates, td, since, today)
+        pos = {d: i for i, d in enumerate(td)}
+        start = None
+        for gap, nxt in zip(gaps, gaps[1:]):
+            if pos[nxt] - pos[gap] <= FINS_GAP_CLUSTER_WINDOW:
+                start = td[max(0, pos[gap] - FINS_BOOTSTRAP_MARGIN)]
+                break
+        if start is None:
+            start = td[-FINS_REFETCH_OVERLAP] if len(td) >= FINS_REFETCH_OVERLAP else today
+        extra = [g for g in gaps if g < start]
+
+    rng = [d for d in pd.bdate_range(start, today)
+           if d in td_set or last_td is None or d > last_td]
+    return sorted(set(extra) | set(rng))
+
+
+def update_fins(progress_callback=None, trading_dates=None, today=None):
     """
     財務データ更新。
 
     - fins_cache.parquet が存在しない → 全銘柄を1件ずつ取得（初回のみ）
-    - 存在する               → 当日開示分だけ差分更新（1回のAPIコール）
+    - 存在する → 前回の確認済み日以降の全取引日を /fins/summary?date= で取得して差分追記
+
+    【2026-09-15 修正】旧実装は「今日の開示」1日分しか取得せず、データ更新ボタンを
+    押さなかった日の開示が永久に欠落していた（2026-04-16〜09-15 で開示ゼロの取引日が
+    約90日。7803/5254/4417 の本決算が未収録のまま成長率・PER が計算されていた）。
+    全開示を取得できた最終日を data/fins_fetch_state.json に記録し、次回はそこから取り直す。
+    状態ファイルが無い場合は、既存キャッシュの開示ゼロ取引日から欠落区間を推定して修復する。
+
+    Args:
+        trading_dates: 取引日の一覧（prices.parquet の Date）。None なら prices.parquet から読む
+        today:         基準日（テスト用）。None なら実行日
     """
+    today = pd.Timestamp(today if today is not None else datetime.today()).normalize()
     existing = _load_fins()
 
     if existing.empty:
-        return _fetch_fins_all(progress_callback)
+        result = _fetch_fins_all(progress_callback)
+        # 銘柄別の全件取得は実行時点までの開示をすべて含む → 前日までを確認済みとする
+        if not result.empty:
+            _save_fins_state({"verified_through": (today - pd.Timedelta(days=1)).strftime("%Y-%m-%d")})
+        return result
 
-    # 差分更新: 今日の開示分を取得
-    today = datetime.today().strftime("%Y-%m-%d")
-    try:
-        data   = _get("/fins/summary", {"date": today})
-        new_df = pd.DataFrame(data.get("data", []))
-    except Exception:
-        return existing
+    if trading_dates is None:
+        trading_dates = _load_trading_dates()
+    state    = _load_fins_state()
+    verified = state.get("verified_through")
 
-    if new_df.empty:
-        return existing
+    disc_dates = pd.to_datetime(existing["DiscDate"], errors="coerce").dropna().unique()
+    dates = _plan_fins_fetch_dates(disc_dates, trading_dates, today, verified)
 
-    # 追記して重複除去（DiscNo がユニークキー）
-    result = pd.concat([existing, new_df], ignore_index=True)
-    if "DiscNo" in result.columns:
-        result = result.drop_duplicates(subset=["DiscNo"]).reset_index(drop=True)
+    new_frames = []
+    failed     = False
+    for i, d in enumerate(dates):
+        date_str = d.strftime("%Y-%m-%d")
+        if progress_callback:
+            progress_callback(i, len(dates), f"財務取得: {date_str}")
+        try:
+            rows = _get_all("/fins/summary", {"date": date_str})
+        except Exception:
+            failed = True   # 以降の日は確認済みにしない（次回この日から取り直す）
+            continue
+        if rows:
+            new_frames.append(pd.DataFrame(rows))
+        # 当日分は後から開示が追加されうるので確認済みにしない
+        if not failed and d < today and (verified is None or date_str > verified):
+            verified = date_str
 
-    result.to_parquet(FINS_PATH, index=False)
+    result = existing
+    if new_frames:
+        # 追記して重複除去（DiscNo がユニークキー。重なり区間の再取得分は新しい値を優先）
+        result = pd.concat([existing] + new_frames, ignore_index=True)
+        if "DiscNo" in result.columns:
+            result = result.drop_duplicates(subset=["DiscNo"], keep="last").reset_index(drop=True)
+        result.to_parquet(FINS_PATH, index=False)
+
+    if verified and verified != state.get("verified_through"):
+        _save_fins_state({**state, "verified_through": verified})
     return result
 
 
@@ -445,6 +567,52 @@ def _calc_momentum_signals(cp, fins_df, code, topix_close=None, lookback=20, vol
 
 # ─── メトリクス計算（APIコールなし・ローカル処理） ───────────────
 
+def _growth_vs_prior_fy(latest, cf_fy, fwd_val, nx_val, actual_col, zero_is_missing):
+    """
+    成長率(%) = 今期値 ÷「今期値の対象年度の直前に終わった FY の実績」- 1。
+
+    今期値の優先順位: 今期予想（latest の F*）→ 来期予想（latest の NxF*。本決算直後）
+    → 最新FY実績。対象年度の終了日（CurFYEn / NxtFYEn）より前に終わった FY 実績のうち
+    最新のものを前期とする。決算期変更で期間長が違う場合は日数比で揃える。
+
+    【2026-09-15 修正】旧実装は前期を常に cf_fy.iloc[1]（最新確定FYのさらに1期前）に
+    していたため、予想値ベースでは 2 年分の伸びを 1 年の成長率として出していた
+    （7803: FY26/6予想 ÷ FY24/6実績 = 利益 +586%。正しくは ÷ FY25/6 = +61%）。
+    """
+    if cf_fy.empty:
+        return np.nan
+
+    def _usable(v):
+        return pd.notna(v) and not (zero_is_missing and v == 0)
+
+    inclusive = False
+    if _usable(fwd_val):
+        curr, st, en = fwd_val, latest.get("CurFYSt"), latest.get("CurFYEn")
+    elif _usable(nx_val):
+        curr, st, en = nx_val, latest.get("NxtFYSt"), latest.get("NxtFYEn")
+        if pd.isna(pd.to_datetime(en, errors="coerce")):
+            # 来期の期間列が無いレコード: 最新レコードの年度そのものを前期とする（期間補正なし）
+            st, en, inclusive = None, latest.get("CurFYEn"), True
+    else:
+        base = cf_fy.iloc[0]
+        curr = pd.to_numeric(base.get(actual_col), errors="coerce")
+        st, en = base.get("CurFYSt"), base.get("CurFYEn")
+
+    end = pd.to_datetime(en, errors="coerce")
+    if pd.isna(curr) or pd.isna(end):
+        return np.nan
+    fy_end = pd.to_datetime(cf_fy["CurFYEn"], errors="coerce")
+    cand = fy_end[(fy_end <= end) if inclusive else (fy_end < end)]
+    if cand.empty:
+        return np.nan
+    prev = cf_fy.loc[cand.idxmax()]
+    prev_val = pd.to_numeric(prev.get(actual_col), errors="coerce")
+    if pd.isna(prev_val) or prev_val == 0:
+        return np.nan
+    scale = period_length_scale(st, en, prev.get("CurFYSt"), prev.get("CurFYEn"))
+    return (curr * scale - prev_val) / abs(prev_val) * 100
+
+
 def _compute_metrics(code, prices_df, fins_df, info_row):
     """1銘柄分のスコア・指標を計算して辞書で返す。データ不足は None。
     prices_df・fins_df はこのコード専用に事前フィルター済みの想定。"""
@@ -571,26 +739,14 @@ def _compute_metrics(code, prices_df, fins_df, info_row):
             div_ann = np.nan
         div_yield = div_ann / latest_close * 100 if (not np.isnan(div_ann) and latest_close > 0) else np.nan
 
-        # 成長率: 予想純利益・売上 vs 前期FY実績
+        # 成長率: 予想純利益・売上 vs「その予想の対象年度の直前の FY 実績」
         # FNP→NxFNp→最新FY実績 の順で優先（FY確報済みの場合はNxFNpを使用）
-        revenue_growth = np.nan
-        profit_growth  = np.nan
-        if len(cf_fy) >= 2:
-            prev_fy    = cf_fy.iloc[1]
-            prev_np    = pd.to_numeric(prev_fy.get("NP"),    errors="coerce")
-            prev_sales = pd.to_numeric(prev_fy.get("Sales"), errors="coerce")
-            curr_np = (fnp   if (pd.notna(fnp)   and fnp   != 0) else
-                       nxfnp if (pd.notna(nxfnp) and nxfnp != 0) else
-                       pd.to_numeric(latest_fy.get("NP"), errors="coerce"))
-            fsales     = pd.to_numeric(latest.get("FSales"),   errors="coerce")
-            nxfsales   = pd.to_numeric(latest.get("NxFSales"), errors="coerce")
-            curr_sales = (fsales   if pd.notna(fsales)   else
-                          nxfsales if pd.notna(nxfsales) else
-                          pd.to_numeric(latest_fy.get("Sales"), errors="coerce"))
-            if pd.notna(prev_np) and prev_np != 0:
-                profit_growth  = (curr_np - prev_np) / abs(prev_np) * 100
-            if pd.notna(prev_sales) and prev_sales != 0:
-                revenue_growth = (curr_sales - prev_sales) / abs(prev_sales) * 100
+        fsales   = pd.to_numeric(latest.get("FSales"),   errors="coerce")
+        nxfsales = pd.to_numeric(latest.get("NxFSales"), errors="coerce")
+        revenue_growth = _growth_vs_prior_fy(latest, cf_fy, fsales, nxfsales, "Sales",
+                                             zero_is_missing=False)
+        profit_growth  = _growth_vs_prior_fy(latest, cf_fy, fnp, nxfnp, "NP",
+                                             zero_is_missing=True)
 
         # ─── Altman Z-score（近似版）────────────────────────────────────
         # 利用可能データで原式に近似: CFO→X1, NP→X2, OP→X3, Eq/負債→X4, Sales→X5
@@ -735,36 +891,34 @@ def fetch_all_stocks(market_codes=None, progress_callback=None):
 
     処理フロー:
       Phase1: update_prices()     → prices.parquet（バルク・差分）
-      Phase2: update_fins()       → fins_cache.parquet（初回のみ全件、以降1コール）
+      Phase2: update_fins()       → fins_cache.parquet（初回のみ全件、以降は前回確認済み日からの取引日数分）
       Phase3: build_stock_cache() → stock_cache.csv（ローカル計算）
 
     初回実行時は Phase2 で全銘柄の財務データを取得するため時間がかかります。
-    2回目以降は Phase1・Phase2 ともに数コール程度で完了します。
+    2回目以降は Phase1・Phase2 とも前回更新からの経過日数分のコールで完了します。
     """
     fins_is_initial = not os.path.exists(FINS_PATH)
 
     # Phase1: 価格データ（バルク・差分）
-    # 初回なら prices が約85コール、以降は1〜数コール
-    price_weight = 0.2 if fins_is_initial else 0.9
+    # 初回なら prices が約85コール、以降は経過日数分
+    price_weight = 0.2 if fins_is_initial else 0.5
 
     def price_cb(i, total, msg):
         if progress_callback:
             frac = (i + 1) / max(total, 1) * price_weight
             progress_callback(min(int(frac * 100), 99), 100, msg)
 
-    update_prices(progress_callback=price_cb if progress_callback else None)
+    prices = update_prices(progress_callback=price_cb if progress_callback else None)
+    trading_dates = prices["Date"].unique() if prices is not None and not prices.empty else None
 
     # Phase2: 財務データ
-    if fins_is_initial:
-        def fins_cb(i, total, msg):
-            if progress_callback:
-                frac = price_weight + (i + 1) / max(total, 1) * (1.0 - price_weight - 0.05)
-                progress_callback(min(int(frac * 100), 99), 100, msg)
-        update_fins(progress_callback=fins_cb)
-    else:
-        update_fins()
+    def fins_cb(i, total, msg):
         if progress_callback:
-            progress_callback(95, 100, "📊 財務データ更新完了")
+            frac = price_weight + (i + 1) / max(total, 1) * (1.0 - price_weight - 0.05)
+            progress_callback(min(int(frac * 100), 99), 100, msg)
+
+    update_fins(progress_callback=fins_cb if progress_callback else None,
+                trading_dates=trading_dates)
 
     # Phase3: メトリクス計算（APIコールなし）
     if progress_callback:
