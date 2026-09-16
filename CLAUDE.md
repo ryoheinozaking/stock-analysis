@@ -519,6 +519,24 @@ BPS・ROE・PER・PBR・時価総額（**自己株控除後の株数**、百万�
 - **パイプラインの PER/PBR を JPX 値へ切り替える前に、バックテストの診断をやり直すこと**
   （現行配点は自前の PBR/PER で検証したもの。株数・自己資本の定義が違う）
 
+#### 一括ダウンロード（/bulk/list・/bulk/get、Light 可、2026-09-16 導入）
+
+- 同期: `scripts/jquants_bulk.py`（**利用者のターミナルで実行**。Claude Code のシェルからは API 不可）→ `data/bulk/<Key>`。
+  既定はバリュエーション指標・財務情報・決算発表予定日の全期間（Light は約5年、216 ファイル）。
+  `data/bulk/manifest.json` の LastModified・Size と比べ、更新されたファイルだけ取り直す
+  （J-Quants は訂正を上書きで反映し差分を提供しない → **定期的に再実行すると訂正を拾える**）
+- 取り込み: `scripts/import_bulk.py`（API 不要。Claude Code からも実行可）
+  - 財務情報 → `fins_cache.parquet` に DiscNo 単位で統合（一括ダウンロード側を優先。書き込み前に `fins_cache.backup_*.parquet` を作成）
+  - バリュエーション指標 → `valuation.parquet`（(Date, Code) 重複は新しいファイル優先）
+  - 決算発表予定日 → `earnings_dates.parquet`（予定変更は新しい行として追加される仕様）
+- 実ファイルで確認した事実（2026-09-16）:
+  - 過去分は `historical/YYYY/<name>_YYYYMM.csv.gz`（月次）、**当月分は `live/<name>_YYYYMMDD.csv.gz`（日次）**
+  - CSV の列名は API の項目名と同一、空欄は空文字（fins_cache と同じ形）
+  - 財務情報の自己資本 `ShEq` は一括ダウンロードの全期間で約99%収録（API 差分取得分だけ見ると 2026-08 以降しか無かった）
+  - 一括ダウンロードの財務情報は 2026-03 以前で旧 fins_cache より月約5%多かった（初回の銘柄別全件取得で、その後に上場廃止した銘柄の開示が欠けていたとみられる）。取り込み後、2021-09 以降の開示ゼロ取引日は大納会の2日のみ
+  - バリュエーション指標の過去分には最新日に存在しない銘柄コードが 586 あり、**すべて prices.parquet にも存在した**。
+    上記「生存バイアス（廃止銘柄が prices.parquet に未収録）」は現在の prices.parquet には当てはまらない可能性がある（未検証）
+
 ---
 
 ## TDnet Yanoshin API（アプリ用）
