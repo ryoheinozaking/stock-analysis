@@ -29,7 +29,11 @@ CACHE_PATH  = os.path.join(_ROOT, "data", "stock_cache.parquet")
 PRICES_PATH = os.path.join(_ROOT, "data", "prices.parquet")
 FINS_PATH   = os.path.join(_ROOT, "data", "fins_cache.parquet")
 FINS_STATE_PATH = os.path.join(_ROOT, "data", "fins_fetch_state.json")
+VALUATION_PATH  = os.path.join(_ROOT, "data", "valuation.parquet")
 BASE_URL    = "https://api.jquants.com/v2"
+
+# バリュエーション指標の初回取得期間（暦日）。長期の過去分は J-Quants の CSV 一括ダウンロードで入れる
+VALUATION_INITIAL_DAYS = 45
 
 # 財務データ差分更新のパラメータ（update_fins / _plan_fins_fetch_dates）
 FINS_REFETCH_OVERLAP         = 2    # 確認済み日を含めて遡って取り直す取引日数（遅れて登録される開示の対策）
@@ -325,6 +329,62 @@ def _fetch_fins_all(progress_callback=None):
     result = pd.concat(all_fins, ignore_index=True) if all_fins else pd.DataFrame()
     os.makedirs(os.path.dirname(FINS_PATH), exist_ok=True)
     result.to_parquet(FINS_PATH, index=False)
+    return result
+
+
+# ─── バリュエーション指標（J-Quants 算出値・差分更新） ─────────────
+
+def _load_valuation():
+    if os.path.exists(VALUATION_PATH):
+        return pd.read_parquet(VALUATION_PATH)
+    return pd.DataFrame()
+
+
+def update_valuation(progress_callback=None, today=None):
+    """
+    バリュエーション指標（/v2/equities/valuation）の差分更新 → data/valuation.parquet。
+
+    J-Quants が決算短信と株価から日次で算出する EPS / BPS / ROE / PER / PBR / 時価総額
+    （株数は自己株控除）。date 指定の 1 コールで全銘柄が取れるので、株価と同じく
+    「最終日の翌日〜今日」を日付ループで取得する。自前計算の答え合わせに使う
+    （scripts/audit_valuation.py）。
+
+    株価（update_prices）と違い、取得に失敗した日で止める。失敗日を飛ばして後続日を保存すると
+    最終日が先に進み、失敗日が二度と取得されないため（fins の取りこぼしと同じ構造）。
+    データは日次 16:30 頃に更新される。それより前に取得した当日分は空で返り、次回また取り直す。
+
+    Args:
+        today: 基準日（テスト用）。None なら実行日
+    """
+    today = pd.Timestamp(today if today is not None else datetime.today()).normalize()
+    existing = _load_valuation()
+    if not existing.empty:
+        from_dt = pd.to_datetime(existing["Date"]).max() + pd.Timedelta(days=1)
+    else:
+        from_dt = today - pd.Timedelta(days=VALUATION_INITIAL_DAYS)
+
+    dates = pd.bdate_range(from_dt, today)
+    new_frames = []
+    for i, d in enumerate(dates):
+        date_str = d.strftime("%Y-%m-%d")
+        if progress_callback:
+            progress_callback(i, len(dates), f"バリュエーション指標取得: {date_str}")
+        try:
+            rows = _get_all("/equities/valuation", {"date": date_str})
+        except Exception:
+            break   # 以降は保存しない（次回この日から取り直す）
+        if rows:
+            new_frames.append(pd.DataFrame(rows))
+
+    if not new_frames:
+        return existing
+
+    frames = ([existing] if not existing.empty else []) + new_frames
+    result = (pd.concat(frames, ignore_index=True)
+                .drop_duplicates(subset=["Date", "Code"], keep="last")
+                .reset_index(drop=True))
+    os.makedirs(os.path.dirname(VALUATION_PATH), exist_ok=True)
+    result.to_parquet(VALUATION_PATH, index=False)
     return result
 
 
@@ -919,6 +979,15 @@ def fetch_all_stocks(market_codes=None, progress_callback=None):
 
     update_fins(progress_callback=fins_cb if progress_callback else None,
                 trading_dates=trading_dates)
+
+    # Phase2.5: バリュエーション指標（J-Quants 算出値。答え合わせ用の補助データのため失敗しても続行）
+    if progress_callback:
+        progress_callback(95, 100, "バリュエーション指標を取得中...")
+    try:
+        update_valuation()
+    except Exception as e:
+        if progress_callback:
+            progress_callback(95, 100, f"バリュエーション指標の取得に失敗しました（続行）: {e}")
 
     # Phase3: メトリクス計算（APIコールなし）
     if progress_callback:
