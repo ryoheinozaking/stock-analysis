@@ -25,6 +25,7 @@ from services.pipeline_service import (
 )
 from services.split_adjust import split_factor_between
 from services.fins_utils import dedupe_same_fy
+from services.forward_returns import attach_fwd_returns
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -38,11 +39,48 @@ DEFAULT_FORWARD_DAYS = 365
 #  スナップショット構築
 # ════════════════════════════════════════════════════════════════════════
 
+STALE_PRICE_DAYS       = 14   # as_of のこの日数より前から取引の無い銘柄は上場廃止済みとして候補から除く
+JPX_MAX_STALENESS_DAYS = 7    # as_of からこの日数より古い J-Quants バリュエーション指標は使わない
+
+
+def apply_jpx_valuation(
+    snap:      pd.DataFrame,
+    valuation: pd.DataFrame,
+    as_of:     pd.Timestamp,
+    per_basis: str = "ttm",
+) -> pd.DataFrame:
+    """スナップショットの PER / PBR / 時価総額を J-Quants のバリュエーション指標で置き換える。
+
+    - PER: per_basis="ttm" は直近12ヶ月実績ベースの PER、"forward" は会社予想ベースの FwdPER
+    - PBR: 自己資本・自己株控除後の株数ベース
+    - market_cap: 自己株控除後の株数 × 株価（百万円 → 円に換算）。apply_hard_filter がこの列を使う
+    JPX 側が空欄の銘柄は自前値で埋めない（定義を混ぜないため）。
+    JPX は決算短信を開示の翌営業日から反映するので、as_of 当日の開示は含まれない。
+    """
+    if per_basis not in ("ttm", "forward"):
+        raise ValueError(f"per_basis は ttm か forward: {per_basis}")
+    as_of = pd.Timestamp(as_of)
+    dates = (valuation["Date"] if pd.api.types.is_datetime64_any_dtype(valuation["Date"])
+             else pd.to_datetime(valuation["Date"], errors="coerce"))
+    mask = (dates <= as_of) & (dates > as_of - pd.Timedelta(days=JPX_MAX_STALENESS_DAYS))
+    latest = (valuation[mask].assign(_date=dates[mask])
+              .sort_values("_date").groupby("Code").tail(1).set_index("Code"))
+
+    out = snap.copy()
+    per_col = "FwdPER" if per_basis == "forward" else "PER"
+    out["PER"] = out["code"].map(pd.to_numeric(latest[per_col], errors="coerce"))
+    out["PBR"] = out["code"].map(pd.to_numeric(latest["PBR"], errors="coerce"))
+    out["market_cap"] = out["code"].map(pd.to_numeric(latest["MktCap"], errors="coerce")) * 1e6
+    return out
+
+
 def _build_atdate_snapshot(
     prices_past: pd.DataFrame,
     fins_past:   pd.DataFrame,
     stock_meta:  pd.DataFrame,
     as_of:       pd.Timestamp,
+    valuation:   Optional[pd.DataFrame] = None,
+    per_basis:   str = "ttm",
 ) -> pd.DataFrame:
     """
     as_of 時点での stock_cache 相当 DataFrame を構築する。
@@ -64,9 +102,15 @@ def _build_atdate_snapshot(
     # AdjC は J-Quants 取得タイミング次第でスケール混在のため使わない
     p = prices_past.sort_values(["Code", "Date"])
     latest_price = (p.groupby("Code")
-                     .tail(1)[["Code", "C"]]
+                     .tail(1)[["Code", "C", "Date"]]
                      .rename(columns={"Code": "code", "C": "close"}))
     latest_price["close"] = pd.to_numeric(latest_price["close"], errors="coerce")
+    # 【2026-09-17】as_of 直前に取引の無い銘柄（上場廃止済み）は候補から除く。「as_of 以前で最新の終値」を
+    # 使うため、何年も前に上場廃止した銘柄が古い株価のまま残っていた（決算データに上場廃止銘柄の
+    # 開示が入ったことで顕在化した）
+    last_trade = pd.to_datetime(latest_price["Date"], errors="coerce")
+    latest_price = (latest_price[last_trade >= as_of - pd.Timedelta(days=STALE_PRICE_DAYS)]
+                    .drop(columns=["Date"]))
 
     # コード別グループ化（split_factor_between 計算用）
     p_indexed = p.copy()
@@ -143,6 +187,9 @@ def _build_atdate_snapshot(
     meta_cols = [c for c in ["code", "code_4", "company_name", "sector", "market"] if c in stock_meta.columns]
     meta = stock_meta[meta_cols].drop_duplicates("code")
     snap = snap.merge(meta, on="code", how="left")
+
+    if valuation is not None:
+        snap = apply_jpx_valuation(snap, valuation, as_of, per_basis)
     return snap
 
 
@@ -237,47 +284,8 @@ def run_snapshot_backtest(
         _cb(f"[{as_of_date}] 追加除外ルール適用: {before} → {len(scored)} 銘柄")
 
     _cb(f"[{as_of_date}] フォワードリターン計算中...")
-    # 分割対応: フォワードリターンは「as_of スケール」で close と price_fwd を統一する
-    # スナップショットの close は C[as_of]（as_of-day スケール）。
-    # price_fwd は C[fwd_date] × split_factor(fwd_date → as_of) で as_of スケールに戻す。
-    # ※ split_factor は as_of < d <= fwd_date 区間の AdjFactor 累積積。
-    #    price_fwd を as_of スケールで見るには その係数を掛ける（per-share 値と同じ）。
-    p_fwd = p[p["Date"] <= fwd_target].sort_values(["Code", "Date"])
-
-    fwd_rows = []
-    for code, grp in p_fwd.groupby("Code"):
-        grp = grp.sort_values("Date").reset_index(drop=True)
-        if grp.empty:
-            continue
-        last_row = grp.iloc[-1]
-        fwd_date  = last_row["Date"]
-        fwd_C_raw = pd.to_numeric(last_row["C"], errors="coerce")
-        # as_of < d <= fwd_date 区間の累積分割係数
-        af = pd.to_numeric(grp["AdjFactor"], errors="coerce").fillna(1.0)
-        af_in_window = af[(grp["Date"] > as_of) & (grp["Date"] <= fwd_date)]
-        sf = float(af_in_window.prod()) if len(af_in_window) > 0 else 1.0
-        # as_of スケールに戻した forward 価格
-        # 分割で価格は 1/N に下がる → as_of スケールで比較するには ÷sf （= ×1/sf）
-        if pd.notna(fwd_C_raw) and sf > 0:
-            price_fwd_in_as_of_scale = fwd_C_raw / sf
-        else:
-            price_fwd_in_as_of_scale = np.nan
-        fwd_rows.append({
-            "code":      code,
-            "fwd_date":  fwd_date,
-            "price_fwd": price_fwd_in_as_of_scale,
-        })
-    fwd_price = pd.DataFrame(fwd_rows)
-
-    scored = scored.merge(fwd_price, on="code", how="left")
-    scored["return_pct"] = (scored["price_fwd"] / scored["close"] - 1) * 100
-
-    # フォワード日付が target に近い銘柄のみ有効データとして扱う（早すぎる上場廃止等を排除）
-    scored["has_fwd_data"] = (
-        scored["fwd_date"].notna()
-        & (scored["fwd_date"] >= fwd_target - pd.Timedelta(days=14))
-        & scored["return_pct"].notna()
-    )
+    # 分割・上場廃止対応（保有中の上場廃止は最終取引価格で手放したとみなす。services/forward_returns.py）
+    scored = attach_fwd_returns(scored, p, as_of, forward_days)
 
     # 順位付け
     scored = scored.sort_values("total_score", ascending=False).reset_index(drop=True)
