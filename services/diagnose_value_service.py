@@ -26,6 +26,7 @@ import numpy as np
 import pandas as pd
 
 from services.backtest_value_service import _build_atdate_snapshot
+from services.forward_returns import attach_fwd_returns
 from services.pipeline_service import (
     _build_fins_metrics,
     _load_fins_fy,
@@ -87,57 +88,8 @@ def generate_monthly_snapshots(
 
 
 # ════════════════════════════════════════════════════════════════════════
-#  forward リターン計算（分割対応）
+#  forward リターン計算: services/forward_returns.py に共通化（分割・上場廃止対応）
 # ════════════════════════════════════════════════════════════════════════
-
-def _calc_fwd_returns(
-    prices_df: pd.DataFrame,
-    as_of: pd.Timestamp,
-    forward_days: int,
-    codes: Optional[List[str]] = None,
-) -> pd.DataFrame:
-    """
-    forward_days 後の価格を as_of スケールに統一して返す。
-
-    - 生 C を使用（AdjC はスナップショット混在のため不可）
-    - 分割係数: as_of < date <= fwd_date 区間の AdjFactor 累積積で ÷ して
-      as_of スケールに揃える
-
-    Parameters
-    ----------
-    codes : フィルタ後の銘柄コードリスト（省略時は全銘柄）
-
-    Returns
-    -------
-    DataFrame[code, fwd_date, price_fwd]
-    """
-    fwd_target = as_of + pd.Timedelta(days=forward_days)
-    p = prices_df.copy()
-    p["Date"]      = pd.to_datetime(p["Date"], errors="coerce")
-    p["AdjFactor"] = pd.to_numeric(p["AdjFactor"], errors="coerce").fillna(1.0)
-
-    if codes is not None:
-        p = p[p["Code"].isin(set(codes))]
-
-    p_fwd = p[p["Date"] <= fwd_target].sort_values(["Code", "Date"])
-
-    rows = []
-    for code, grp in p_fwd.groupby("Code"):
-        grp = grp.sort_values("Date").reset_index(drop=True)
-        last_row    = grp.iloc[-1]
-        fwd_date    = last_row["Date"]
-        fwd_C_raw   = pd.to_numeric(last_row["C"], errors="coerce")
-
-        # as_of < date <= fwd_date の累積分割係数
-        in_window   = grp[(grp["Date"] > as_of) & (grp["Date"] <= fwd_date)]
-        sf          = float(in_window["AdjFactor"].prod()) if len(in_window) > 0 else 1.0
-
-        price_fwd = fwd_C_raw / sf if (pd.notna(fwd_C_raw) and sf > 0) else np.nan
-        rows.append({"code": code, "fwd_date": fwd_date, "price_fwd": price_fwd})
-
-    if not rows:
-        return pd.DataFrame(columns=["code", "fwd_date", "price_fwd"])
-    return pd.DataFrame(rows)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -152,6 +104,9 @@ def run_value_snapshot(
     top_n:        int = 20,
     forward_days: int = 60,
     progress_cb:  Optional[Callable] = None,
+    valuation:    Optional[pd.DataFrame] = None,
+    per_basis:    str = "ttm",
+    include_delisted: bool = True,
 ) -> Dict:
     """
     as_of_date 時点のバリュー株パイプラインを再現し、
@@ -161,6 +116,10 @@ def run_value_snapshot(
       - prices_past  : prices_df の as_of 以前のみ
       - fins_past    : fins_fy  の DiscDate <= as_of のみ
       - _build_atdate_snapshot が per-share 値の分割スケールを統一
+
+    valuation を渡すと PER / PBR / 時価総額を J-Quants のバリュエーション指標で置き換える
+    （per_basis: "ttm" = 直近12ヶ月実績 / "forward" = 会社予想）。
+    include_delisted=False は旧挙動（保有中に上場廃止した銘柄を集計から外す）で、比較診断用。
     """
     def _cb(m):
         if progress_cb:
@@ -170,8 +129,10 @@ def run_value_snapshot(
     fwd_target = as_of + pd.Timedelta(days=forward_days)
 
     # as_of 以前のデータだけ使う
-    p = prices_df.copy()
-    p["Date"] = pd.to_datetime(p["Date"], errors="coerce")
+    p = prices_df
+    if not pd.api.types.is_datetime64_any_dtype(p["Date"]):
+        p = prices_df.copy()
+        p["Date"] = pd.to_datetime(p["Date"], errors="coerce")
     prices_past = p[p["Date"] <= as_of].copy()
     fins_past   = fins_fy[fins_fy["DiscDate"] <= as_of].copy()
 
@@ -180,7 +141,8 @@ def run_value_snapshot(
 
     # スナップショット構築（close / PER / PBR / ROE / rev_growth / profit_growth）
     _cb(f"[{as_of_date}] スナップショット構築中...")
-    snap_df = _build_atdate_snapshot(prices_past, fins_past, stock_meta, as_of)
+    snap_df = _build_atdate_snapshot(prices_past, fins_past, stock_meta, as_of,
+                                     valuation=valuation, per_basis=per_basis)
     if snap_df.empty:
         return {"as_of": as_of_date, "error": "スナップショット空"}
 
@@ -201,19 +163,7 @@ def run_value_snapshot(
 
     # forward リターン（フィルタ通過銘柄のみ計算）
     _cb(f"[{as_of_date}] forward リターン計算中...")
-    fwd_df = _calc_fwd_returns(
-        p, as_of, forward_days,
-        codes=scored["code"].tolist(),
-    )
-    scored = scored.merge(fwd_df, on="code", how="left")
-    scored["return_pct"] = (scored["price_fwd"] / scored["close"] - 1) * 100
-
-    # forward データが揃っているかフラグ
-    scored["has_fwd_data"] = (
-        scored["fwd_date"].notna()
-        & (scored["fwd_date"] >= fwd_target - pd.Timedelta(days=14))
-        & scored["return_pct"].notna()
-    )
+    scored = attach_fwd_returns(scored, p, as_of, forward_days, include_delisted=include_delisted)
 
     scored = scored.sort_values("total_score", ascending=False).reset_index(drop=True)
     scored["rank"]   = scored.index + 1

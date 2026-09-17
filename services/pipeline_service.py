@@ -326,8 +326,10 @@ def apply_hard_filter(
     """ハードフィルタ通過銘柄を返す。mode='growth' or 'value'"""
     df = stock_df.merge(fins_metrics, on="code", how="left")
 
-    # 時価総額計算
-    df["market_cap"] = df["close"] * df["sh_out"].fillna(0)
+    # 時価総額: 呼び出し側が列を渡していればそれを使う（バックテストで J-Quants の時価総額に
+    # 置き換える場合。空欄は自前値で埋めない）。無ければ close × 本決算の株数で自前計算する
+    if "market_cap" not in df.columns:
+        df["market_cap"] = df["close"] * df["sh_out"].fillna(0)
 
     if mode == "value":
         # ROE 制約撤廃（Deep Value を拾うため）。倒産リスクは equity_ratio + 営業黒字で管理
