@@ -190,7 +190,12 @@ def _render_scorecard(rank: int, row, ai_stocks: dict, key_prefix: str = "t1", m
             if isinstance(last_stmt, str) and last_stmt:
                 fresh_note = f" ／ 最新決算短信 **{last_stmt}**"
                 if _is_true(getattr(row, "fins_overdue", False)):
-                    fresh_note += " ⚠️ **次の決算短信が未収録**"
+                    missed = getattr(row, "missed_sched_date", None)
+                    fresh_note += (f" ⚠️ **決算予定日 {missed} を過ぎても未収録**"
+                                   if isinstance(missed, str) and missed else " ⚠️ **次の決算短信が未収録**")
+            next_sched = getattr(row, "next_sched_date", None)
+            if isinstance(next_sched, str) and next_sched:
+                fresh_note += f" ／ 次の決算予定 **{next_sched}**"
             if _is_true(getattr(row, "fy_irregular", False)):
                 fresh_note += " ／ 変則決算期（期間長を補正して比較）"
             if mode == "value":
@@ -808,13 +813,15 @@ c4.metric("最高総合スコア", f"{top10['total_score'].iloc[0]:.1f}")
 if "fins_overdue" in top10.columns:
     overdue = top10[top10["fins_overdue"].map(_is_true)]
     if not overdue.empty:
-        names = "、".join(
-            f"{r.code_4} {r.company_name}（最新決算短信 {r.last_stmt_date}）"
-            for r in overdue.itertuples()
-        )
+        def _overdue_label(r):
+            missed = getattr(r, "missed_sched_date", None)
+            sched = f"・決算予定日 {missed}" if isinstance(missed, str) and missed else ""
+            return f"{r.code_4} {r.company_name}（最新決算短信 {r.last_stmt_date}{sched}）"
+
+        names = "、".join(_overdue_label(r) for r in overdue.itertuples())
         st.warning(
-            f"⚠️ 最終候補のうち {len(overdue)} 銘柄は、次の決算短信の開示期限を過ぎているのに"
-            f"財務データに未収録です: {names}。成長率・PER は古い決算に基づいています。"
+            f"⚠️ 最終候補のうち {len(overdue)} 銘柄は、決算発表予定日（予定が無い銘柄は推定の開示期限）を"
+            f"過ぎているのに財務データに未収録です: {names}。成長率などは古い決算に基づいています。"
         )
 
 st.divider()

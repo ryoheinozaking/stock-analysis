@@ -38,6 +38,7 @@ _ROOT             = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _STOCK_CACHE_PATH = os.path.join(_ROOT, "data", "stock_cache.parquet")
 _FINS_CACHE_PATH  = os.path.join(_ROOT, "data", "fins_cache.parquet")
 _PRICES_PATH      = os.path.join(_ROOT, "data", "prices.parquet")
+_EARNINGS_DATES_PATH = os.path.join(_ROOT, "data", "earnings_dates.parquet")
 
 # ── モデル・コスト ────────────────────────────────────────────────────────
 MODEL                 = "claude-sonnet-4-6"
@@ -161,7 +162,9 @@ def _build_fins_freshness(prices_df: pd.DataFrame):
         )
         trading = pd.to_datetime(pd.Series(prices_df["Date"].unique()), errors="coerce").dropna()
         as_of = trading.max().normalize() if not trading.empty else pd.Timestamp.today().normalize()
-        per_code = disclosure_freshness(fins, as_of)
+        earnings_dates = (pd.read_parquet(_EARNINGS_DATES_PATH)
+                          if os.path.exists(_EARNINGS_DATES_PATH) else None)
+        per_code = disclosure_freshness(fins, as_of, earnings_dates=earnings_dates)
         gaps = find_disclosure_gaps(
             fins["DiscDate"].unique(), trading,
             since=as_of - pd.Timedelta(days=FRESHNESS_GAP_WINDOW_DAYS), until=as_of,

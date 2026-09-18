@@ -31,6 +31,7 @@ PRICES_PATH = os.path.join(_ROOT, "data", "prices.parquet")
 FINS_PATH   = os.path.join(_ROOT, "data", "fins_cache.parquet")
 FINS_STATE_PATH = os.path.join(_ROOT, "data", "fins_fetch_state.json")
 VALUATION_PATH  = os.path.join(_ROOT, "data", "valuation.parquet")
+EARNINGS_DATES_PATH = os.path.join(_ROOT, "data", "earnings_dates.parquet")
 BASE_URL    = "https://api.jquants.com/v2"
 
 # バリュエーション指標の初回取得期間（暦日）。長期の過去分は J-Quants の CSV 一括ダウンロードで入れる
@@ -386,6 +387,48 @@ def update_valuation(progress_callback=None, today=None):
                 .reset_index(drop=True))
     os.makedirs(os.path.dirname(VALUATION_PATH), exist_ok=True)
     result.to_parquet(VALUATION_PATH, index=False)
+    return result
+
+
+def update_earnings_dates(progress_callback=None, today=None):
+    """
+    決算発表予定日（/fins/earnings-date、全プラン）の差分更新 → data/earnings_dates.parquet。
+
+    予定日の公表・変更は削除されず新しい行として追加される仕様なので、公表日（date=）の日付ループで
+    最終公表日〜今日を取得して追記する（最終公表日は当日分の追加公表に備えて取り直す）。
+    失敗した日で止め、次回はそこから取り直す。過去分は一括ダウンロード（scripts/jquants_bulk.py）で入れる。
+    決算短信の未収録チェック（fins_utils.disclosure_freshness）が使う。
+    """
+    today = pd.Timestamp(today if today is not None else datetime.today()).normalize()
+    existing = (pd.read_parquet(EARNINGS_DATES_PATH) if os.path.exists(EARNINGS_DATES_PATH)
+                else pd.DataFrame())
+    if not existing.empty:
+        from_dt = pd.to_datetime(existing["PubDate"]).max()
+    else:
+        from_dt = today - pd.Timedelta(days=45)
+
+    dates = pd.bdate_range(from_dt, today)
+    new_frames = []
+    for i, d in enumerate(dates):
+        date_str = d.strftime("%Y-%m-%d")
+        if progress_callback:
+            progress_callback(i, len(dates), f"決算発表予定日取得: {date_str}")
+        try:
+            rows = _get_all("/fins/earnings-date", {"date": date_str})
+        except Exception:
+            break   # 以降は保存しない（次回この日から取り直す）
+        if rows:
+            new_frames.append(pd.DataFrame(rows).astype(str))
+
+    if not new_frames:
+        return existing
+    frames = ([existing.astype(str)] if not existing.empty else []) + new_frames
+    result = (pd.concat(frames, ignore_index=True)
+                .drop_duplicates(keep="last")
+                .sort_values(["PubDate", "Code", "FQName"])
+                .reset_index(drop=True))
+    os.makedirs(os.path.dirname(EARNINGS_DATES_PATH), exist_ok=True)
+    result.to_parquet(EARNINGS_DATES_PATH, index=False)
     return result
 
 
@@ -989,14 +1032,17 @@ def fetch_all_stocks(market_codes=None, progress_callback=None):
     update_fins(progress_callback=fins_cb if progress_callback else None,
                 trading_dates=trading_dates)
 
-    # Phase2.5: バリュエーション指標（J-Quants 算出値。答え合わせ用の補助データのため失敗しても続行）
-    if progress_callback:
-        progress_callback(95, 100, "バリュエーション指標を取得中...")
-    try:
-        update_valuation()
-    except Exception as e:
+    # Phase2.5: バリュエーション指標（本番の PER/PBR/ROE/時価総額の出所）と決算発表予定日。
+    # 失敗しても続行する（バリュエーションは直近 7 日以内の値で代用、予定日は推定ルールで代用される）
+    for label, updater in (("バリュエーション指標", update_valuation),
+                           ("決算発表予定日", update_earnings_dates)):
         if progress_callback:
-            progress_callback(95, 100, f"バリュエーション指標の取得に失敗しました（続行）: {e}")
+            progress_callback(95, 100, f"{label}を取得中...")
+        try:
+            updater()
+        except Exception as e:
+            if progress_callback:
+                progress_callback(95, 100, f"{label}の取得に失敗しました（続行）: {e}")
 
     # Phase3: メトリクス計算（APIコールなし）
     if progress_callback:
