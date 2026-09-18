@@ -58,6 +58,7 @@ def _save_cache(result: dict) -> None:
         "ai_analysis":      result["ai_analysis"],
         "market_condition": result.get("market_condition"),
         "fins_freshness":   result.get("fins_freshness"),
+        "valuation_date":   result.get("valuation_date"),
     }
     with open(_CACHE_PATH, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, default=str)
@@ -88,6 +89,7 @@ def _load_cache() -> dict:
             "ai_analysis":      payload.get("ai_analysis"),
             "market_condition": payload.get("market_condition"),
             "fins_freshness":   payload.get("fins_freshness"),
+            "valuation_date":   payload.get("valuation_date"),
         }
     except Exception:
         return None
@@ -745,6 +747,13 @@ if generated_at:
         st.caption(f"最終実行: {dt.strftime('%Y-%m-%d %H:%M')}　（リロードしても結果は保持されます）")
     except Exception:
         pass
+
+# ── PER / PBR / ROE / 時価総額の出所 ──────────────────────────────────
+valuation_date = result.get("valuation_date")
+if valuation_date:
+    st.caption(f"PER・PBR・ROE・時価総額: J-Quants バリュエーション指標（{valuation_date} 時点。PER・ROE は会社予想ベース）")
+else:
+    st.caption("PER・PBR・ROE・時価総額: 自前計算（J-Quants バリュエーション指標が未取得。「データ更新」で取得されます）")
 
 # ── 財務データ（fins_cache）の鮮度 ────────────────────────────────────
 fins_fresh = result.get("fins_freshness") or {}

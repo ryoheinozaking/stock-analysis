@@ -130,6 +130,9 @@ def run_growth_snapshot(
     forward_days: int = 60,
     progress_cb:  Optional[Callable] = None,
     fins_all:     Optional[pd.DataFrame] = None,
+    valuation:    Optional[pd.DataFrame] = None,
+    per_basis:    str = "ttm",
+    include_delisted: bool = True,
 ) -> Dict:
     """
     as_of_date 時点の成長株パイプラインを再現し、
@@ -148,8 +151,10 @@ def run_growth_snapshot(
     fwd_target = as_of + pd.Timedelta(days=forward_days)
 
     # as_of 以前のデータだけ使う
-    p = prices_df.copy()
-    p["Date"] = pd.to_datetime(p["Date"], errors="coerce")
+    p = prices_df
+    if not pd.api.types.is_datetime64_any_dtype(p["Date"]):
+        p = prices_df.copy()
+        p["Date"] = pd.to_datetime(p["Date"], errors="coerce")
     prices_past = p[p["Date"] <= as_of].copy()
     fins_past   = fins_fy[fins_fy["DiscDate"] <= as_of].copy()
 
@@ -158,7 +163,8 @@ def run_growth_snapshot(
 
     # スナップショット構築（close / PER / PBR / ROE / rev_growth / profit_growth）
     _cb(f"[{as_of_date}] スナップショット構築中...")
-    snap_df = _build_atdate_snapshot(prices_past, fins_past, stock_meta, as_of)
+    snap_df = _build_atdate_snapshot(prices_past, fins_past, stock_meta, as_of,
+                                     valuation=valuation, per_basis=per_basis)
     if snap_df.empty:
         return {"as_of": as_of_date, "error": "スナップショット空"}
 
@@ -200,7 +206,7 @@ def run_growth_snapshot(
 
     # forward リターン（フィルタ通過銘柄のみ計算）
     _cb(f"[{as_of_date}] forward リターン計算中...")
-    scored = attach_fwd_returns(scored, p, as_of, forward_days)
+    scored = attach_fwd_returns(scored, p, as_of, forward_days, include_delisted=include_delisted)
 
     scored = scored.sort_values("total_score", ascending=False).reset_index(drop=True)
     scored["rank"]   = scored.index + 1
