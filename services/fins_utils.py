@@ -141,7 +141,48 @@ def find_disclosure_gaps(disc_dates: Iterable, trading_dates: Iterable,
     return [d for d in to_day_list(trading_dates) if since <= d <= until and d not in disc]
 
 
-def disclosure_freshness(fins_df: pd.DataFrame, as_of) -> pd.DataFrame:
+SCHEDULE_LOOKBACK_DAYS = 150   # この日数以内に公表された予定を「今の決算サイクル」とみなす
+SCHEDULE_GRACE_DAYS    = 1     # 予定日の翌日を過ぎたら未収録とみなす（J-Quants は当日夜〜翌朝に反映）
+EARLY_RELEASE_DAYS     = 30    # 予定日より前倒しで開示された決算短信も受け付ける幅
+
+
+def _schedule_status(earnings_dates: pd.DataFrame, stmts: pd.DataFrame, as_of) -> pd.DataFrame:
+    """決算発表予定日（/fins/earnings-date）から、予定日を過ぎても決算短信が未収録かを銘柄別に返す。
+
+    予定日の公表・変更は削除されず新しい行として追加される仕様なので、(銘柄, 決算区分, 決算期末) ごとに
+    最後に公表された予定を使う。SchDate が空欄（未定）の予定は判定に使わない。
+    戻り値の列: code / has_schedule / missed_sched_date / next_sched_date
+    """
+    as_of = pd.Timestamp(as_of).normalize()
+    e = pd.DataFrame({
+        "code": earnings_dates["Code"].astype(str),
+        "fq":   earnings_dates["FQName"].astype(str),
+        "fye":  earnings_dates["FYE"].astype(str),
+        "pub":  pd.to_datetime(earnings_dates["PubDate"], errors="coerce"),
+        "sch":  pd.to_datetime(earnings_dates["SchDate"], errors="coerce"),   # 空欄（未定）は NaT
+    })
+    e = e[(e["pub"] <= as_of) & (e["pub"] > as_of - pd.Timedelta(days=SCHEDULE_LOOKBACK_DAYS))]
+    cur = e.sort_values("pub").groupby(["code", "fq", "fye"]).tail(1)
+
+    due = cur[cur["sch"].notna() & (cur["sch"] <= as_of - pd.Timedelta(days=SCHEDULE_GRACE_DAYS))]
+    due = due.sort_values("sch").groupby("code").tail(1)
+    s = pd.DataFrame({"code": stmts["Code"].astype(str), "fq": stmts["CurPerType"].astype(str),
+                      "disc": stmts["_disc"]})
+    m = due.merge(s, on=["code", "fq"], how="left")
+    received = set(m.loc[m["disc"] >= m["sch"] - pd.Timedelta(days=EARLY_RELEASE_DAYS), "code"])
+    missed = due[~due["code"].isin(received)].set_index("code")["sch"]
+    upcoming = (cur[cur["sch"] > as_of].sort_values("sch").groupby("code").head(1)
+                .set_index("code")["sch"])
+
+    out = pd.DataFrame({"code": cur["code"].unique()})
+    out["has_schedule"] = True
+    out["missed_sched_date"] = out["code"].map(missed.dt.strftime("%Y-%m-%d"))
+    out["next_sched_date"] = out["code"].map(upcoming.dt.strftime("%Y-%m-%d"))
+    return out
+
+
+def disclosure_freshness(fins_df: pd.DataFrame, as_of,
+                         earnings_dates: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """銘柄ごとの最新開示日・最新決算短信日と、次の決算短信が期限を過ぎても未収録かを返す。
 
     戻り値の列: code / last_disc_date / last_stmt_date / last_stmt_period_end / fins_overdue
@@ -150,8 +191,13 @@ def disclosure_freshness(fins_df: pd.DataFrame, as_of) -> pd.DataFrame:
     次の決算短信の期限 = 最新決算短信の期末 + 次の期間 + 50日。
     次の期間は通常 3ヶ月（四半期）。6ヶ月以下の FY を開示している銘柄（REIT 等）は 6ヶ月。
     必要な列: Code, DiscDate, DocType, CurPerType, CurPerSt, CurPerEn
+
+    【2026-09-19】earnings_dates（決算発表予定日）を渡すと、予定のある銘柄は推定ではなく実際の予定日で判定する:
+    予定日を過ぎても同じ決算区分の決算短信が無ければ fins_overdue（missed_sched_date に予定日）。
+    予定の無い銘柄は従来の「期末 + 次の期間 + 50日」で判定する。next_sched_date は次の決算発表予定日。
     """
-    cols = ["code", "last_disc_date", "last_stmt_date", "last_stmt_period_end", "fins_overdue"]
+    cols = ["code", "last_disc_date", "last_stmt_date", "last_stmt_period_end", "fins_overdue",
+            "missed_sched_date", "next_sched_date"]
     if fins_df.empty:
         return pd.DataFrame(columns=cols)
     as_of = pd.Timestamp(as_of).normalize()
@@ -161,7 +207,8 @@ def disclosure_freshness(fins_df: pd.DataFrame, as_of) -> pd.DataFrame:
     d = d.dropna(subset=["_disc"])
     last_disc = d.groupby("Code")["_disc"].max()
 
-    stmts = (filter_statements(d).sort_values("_disc")
+    all_stmts = filter_statements(d)
+    stmts = (all_stmts.sort_values("_disc")
              .groupby("Code").tail(1).set_index("Code"))
     per_st = pd.to_datetime(stmts["CurPerSt"], errors="coerce")
     per_en = pd.to_datetime(stmts["CurPerEn"], errors="coerce")
@@ -181,5 +228,18 @@ def disclosure_freshness(fins_df: pd.DataFrame, as_of) -> pd.DataFrame:
         "fins_overdue":         (deadline < as_of).values,
     })
     out = out.merge(stmt_info, on="code", how="left")
-    out["fins_overdue"] = out["fins_overdue"].fillna(False).astype(bool)
+    out["fins_overdue"] = out["fins_overdue"].eq(True)
+    out["missed_sched_date"] = None
+    out["next_sched_date"] = None
+
+    if earnings_dates is not None and not earnings_dates.empty:
+        sched = _schedule_status(earnings_dates, all_stmts, as_of)
+        out = (out.drop(columns=["missed_sched_date", "next_sched_date"])
+                  .merge(sched, on="code", how="left"))
+        has = out["has_schedule"].eq(True)
+        out.loc[has, "fins_overdue"] = out.loc[has, "missed_sched_date"].notna()
+    # 決算短信が1件も無い銘柄（J-Quants の財務情報に収録されないインフラファンド等）は判定しない
+    no_stmt = out["last_stmt_date"].isna()
+    out.loc[no_stmt, "fins_overdue"] = False
+    out.loc[no_stmt, "missed_sched_date"] = None
     return out[cols]
