@@ -26,6 +26,7 @@ from services.pipeline_service import (
 from services.split_adjust import split_factor_between
 from services.fins_utils import dedupe_same_fy
 from services.forward_returns import attach_fwd_returns
+from services.valuation_source import apply_jpx_valuation
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -39,39 +40,7 @@ DEFAULT_FORWARD_DAYS = 365
 #  スナップショット構築
 # ════════════════════════════════════════════════════════════════════════
 
-STALE_PRICE_DAYS       = 14   # as_of のこの日数より前から取引の無い銘柄は上場廃止済みとして候補から除く
-JPX_MAX_STALENESS_DAYS = 7    # as_of からこの日数より古い J-Quants バリュエーション指標は使わない
-
-
-def apply_jpx_valuation(
-    snap:      pd.DataFrame,
-    valuation: pd.DataFrame,
-    as_of:     pd.Timestamp,
-    per_basis: str = "ttm",
-) -> pd.DataFrame:
-    """スナップショットの PER / PBR / 時価総額を J-Quants のバリュエーション指標で置き換える。
-
-    - PER: per_basis="ttm" は直近12ヶ月実績ベースの PER、"forward" は会社予想ベースの FwdPER
-    - PBR: 自己資本・自己株控除後の株数ベース
-    - market_cap: 自己株控除後の株数 × 株価（百万円 → 円に換算）。apply_hard_filter がこの列を使う
-    JPX 側が空欄の銘柄は自前値で埋めない（定義を混ぜないため）。
-    JPX は決算短信を開示の翌営業日から反映するので、as_of 当日の開示は含まれない。
-    """
-    if per_basis not in ("ttm", "forward"):
-        raise ValueError(f"per_basis は ttm か forward: {per_basis}")
-    as_of = pd.Timestamp(as_of)
-    dates = (valuation["Date"] if pd.api.types.is_datetime64_any_dtype(valuation["Date"])
-             else pd.to_datetime(valuation["Date"], errors="coerce"))
-    mask = (dates <= as_of) & (dates > as_of - pd.Timedelta(days=JPX_MAX_STALENESS_DAYS))
-    latest = (valuation[mask].assign(_date=dates[mask])
-              .sort_values("_date").groupby("Code").tail(1).set_index("Code"))
-
-    out = snap.copy()
-    per_col = "FwdPER" if per_basis == "forward" else "PER"
-    out["PER"] = out["code"].map(pd.to_numeric(latest[per_col], errors="coerce"))
-    out["PBR"] = out["code"].map(pd.to_numeric(latest["PBR"], errors="coerce"))
-    out["market_cap"] = out["code"].map(pd.to_numeric(latest["MktCap"], errors="coerce")) * 1e6
-    return out
+STALE_PRICE_DAYS = 14   # as_of のこの日数より前から取引の無い銘柄は上場廃止済みとして候補から除く
 
 
 def _build_atdate_snapshot(

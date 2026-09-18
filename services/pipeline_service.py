@@ -1296,6 +1296,9 @@ def run_pipeline(use_claude: bool = True, progress_callback=None, mode: str = "g
         "ai_analysis":      ai_result,
         "market_condition": market,
         "fins_freshness":   fins_fresh_summary,
+        # PER / PBR / ROE / 時価総額の出所（J-Quants バリュエーション指標の日付。無ければ自前計算）
+        "valuation_date":   (stock_df["valuation_date"].dropna().max()
+                             if "valuation_date" in stock_df.columns else None),
         "mode":             mode,
         "stats": {
             "total":    len(stock_df),

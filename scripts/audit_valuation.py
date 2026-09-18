@@ -48,6 +48,11 @@ def main():
         sys.exit(f"{date.date()} のバリュエーション指標がありません。")
 
     stock = pd.read_parquet(CACHE_PATH)
+    # 本番の stock_cache は J-Quants 値で上書き済み（2026-09-18〜）。自前計算は *_self 列にある
+    for col in ("PER", "PBR", "ROE"):
+        if f"{col}_self" in stock.columns:
+            stock[col] = stock[f"{col}_self"]
+    stock = stock.drop(columns=["market_cap"], errors="ignore")
     prices = pd.read_parquet(PRICES_PATH, columns=["Date", "Code", "AdjFactor"])
     price_date = pd.to_datetime(prices["Date"]).max()
 

@@ -23,6 +23,7 @@ from services.split_adjust import normalize_close, normalize_volume, forecast_pe
 from services.fins_utils import (
     filter_fy_statements, dedupe_same_fy, find_disclosure_gaps, period_length_scale, to_day_list,
 )
+from services.valuation_source import apply_live_valuation
 
 _ROOT       = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE_PATH  = os.path.join(_ROOT, "data", "stock_cache.parquet")
@@ -937,6 +938,14 @@ def build_stock_cache(market_codes=None):
             results.append(row)
 
     df = pd.DataFrame(results) if results else pd.DataFrame()
+
+    # PER / PBR / ROE / 時価総額は J-Quants のバリュエーション指標（予想ベース）に置き換える
+    # （2026-09-18〜。自前計算は *_self 列に残す。経緯は services/valuation_source.py）
+    valuation = _load_valuation()
+    if not df.empty and not valuation.empty:
+        as_of = pd.to_datetime(pd.Series(prices_df["Date"].unique())).max()
+        df = apply_live_valuation(df, valuation, as_of)
+
     if not df.empty:
         os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
         df.to_parquet(CACHE_PATH, index=False)
