@@ -669,7 +669,8 @@ with st.sidebar:
   - **ROE 制約は撤廃**（IC=-0.027 で逆効果のため）
 - **ファンダ 100pt** (PBR-heavy)
   - PBR 50pt / PSR 30pt / PER 10pt / op_margin 10pt
-  - V字転換+15pt / 2期増益+10pt / 増配+10pt
+  - ボーナス: アクティビスト保有+10pt / 2期増益+10pt / 増配+10pt
+  - V字転換・配当性向のボーナスは撤廃（2026-06-14。上位20では逆効果と判明）
   - ROE/成長率は撤廃（Rank IC 診断で予測力なしと判明）
 - **テクニカル**
   - MA200乖離 30pt / RSI 20pt（30-50）
@@ -715,7 +716,11 @@ if run_btn:
         try:
             result = run_pipeline(use_claude=use_claude, progress_callback=_cb, mode=mode)
             result["generated_at"] = datetime.now().isoformat()
-            # Claude分析OFFの場合、既存のAI分析結果を引き継ぐ
+            # AI コメントがいつの分析か（引き継いだ古いコメントと区別するため）
+            ai_now = result.get("ai_analysis")
+            if use_claude and ai_now and not ai_now.get("error"):
+                ai_now["_generated_at"] = result["generated_at"]
+            # Claude分析OFFの場合、既存のAI分析結果を引き継ぐ（作成日も一緒に引き継がれる）
             if not use_claude:
                 prev = st.session_state.get("pipeline_result") or {}
                 prev_ai = prev.get("ai_analysis")
@@ -827,7 +832,25 @@ if "fins_overdue" in top10.columns:
 st.divider()
 
 # ── Claude AI コメント ────────────────────────────────────────────────
+def _parse_dt(value):
+    try:
+        return datetime.fromisoformat(value) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
 if ai and not ai.get("error"):
+    # Claude 分析をオフで実行すると前回のコメントを引き継ぐため、いつの分析かを明示する
+    ai_dt  = _parse_dt(ai.get("_generated_at"))
+    run_dt = _parse_dt(generated_at)
+    is_carried_over = ai_dt is None or (run_dt is not None and (run_dt - ai_dt).total_seconds() > 60)
+    if is_carried_over:
+        when = f"{ai_dt:%Y-%m-%d %H:%M} の分析" if ai_dt else "作成日不明の古い分析"
+        st.warning(
+            f"⚠️ 以下の Claude のコメントは **{when}** です（今回の実行では Claude 分析をしていません）。"
+            "今の候補とは合っていない可能性があります。最新にするには、サイドバーの"
+            "「Claude AI分析を実行する」をオンにして再実行してください。"
+        )
     comment = ai.get("market_comment", "")
     if comment:
         st.info(f"**市場環境コメント（Claude）**\n\n{comment}")
