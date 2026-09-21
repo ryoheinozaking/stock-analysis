@@ -116,3 +116,135 @@ def test_earnings_block_before_first_publication_is_empty():
     # 10/5 時点では予定がまだ公表されていない（先読みしない）
     assert ("11110", _TS("2023-10-05")) not in block
     assert ("11110", _TS("2023-10-06")) in block
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  Task 2 / 3: ペーパー口座と 1 営業日の処理
+# ════════════════════════════════════════════════════════════════════════
+
+from services.breakout_engine import run_day            # noqa: E402
+from services.paper_broker import PaperBroker           # noqa: E402
+
+_P = BreakoutParams()
+
+
+def _bars(rows):
+    """{code: (O, H, L, C, AdjFactor, atr_raw)} → run_day に渡す DataFrame。"""
+    cols = ["Code", "O", "H", "L", "C", "AdjFactor", "atr_raw"]
+    return pd.DataFrame([[k, *v] for k, v in rows.items()], columns=cols).set_index("Code")
+
+
+def _cands(date, rows):
+    return pd.DataFrame([dict(Date=_TS(date), Code=k, vol_ratio=v[0], atr_raw=v[1], C=v[2])
+                         for k, v in rows.items()])
+
+
+def _holding(stop=900.0, shares=100, entry=1000.0):
+    b = PaperBroker(3_000_000)
+    b.buy("11110", shares, entry, _TS("2024-01-04"), stop=stop, high=entry)
+    b.last_processed = "2024-01-04"
+    return b
+
+
+def test_order_size_from_risk():
+    """資産 300 万・ATR 50 → 損切り幅 100 円 → 15,000 ÷ 100 = 150 株 → 100 株単位で 100 株。"""
+    b = PaperBroker(3_000_000)
+    run_day(b, _TS("2024-01-04"), _bars({}), _cands("2024-01-04", {"11110": (3.0, 50.0, 1000.0)}), _P)
+    assert [(o["code"], o["shares"]) for o in b.orders] == [("11110", 100)]
+
+
+def test_order_size_capped_at_20pct():
+    """ATR が小さく株数が大きくなっても、金額は資産の 20%（60 万円）まで。"""
+    b = PaperBroker(3_000_000)
+    run_day(b, _TS("2024-01-04"), _bars({}), _cands("2024-01-04", {"11110": (3.0, 1.0, 1000.0)}), _P)
+    assert b.orders[0]["shares"] == 600
+
+
+def test_order_skipped_when_one_lot_exceeds_cap():
+    b = PaperBroker(3_000_000)
+    run_day(b, _TS("2024-01-04"), _bars({}), _cands("2024-01-04", {"11110": (3.0, 100.0, 7000.0)}), _P)
+    assert b.orders == []
+
+
+def test_fill_at_next_open_with_slippage_and_initial_stop():
+    b = PaperBroker(3_000_000)
+    run_day(b, _TS("2024-01-04"), _bars({}), _cands("2024-01-04", {"11110": (3.0, 50.0, 1000.0)}), _P)
+    run_day(b, _TS("2024-01-05"), _bars({"11110": (1010, 1030, 1005, 1020, 1.0, 50.0)}), _cands("2024-01-05", {}), _P)
+    pos = b.positions["11110"]
+    assert pos["entry_price"] == pytest.approx(1010 * 1.001)
+    # 初期損切り = 始値 − ATR×2 = 910。高値 1030 − ATR×3 = 880 は低いので引き上げない
+    assert pos["stop"] == pytest.approx(910.0)
+    assert b.cash == pytest.approx(3_000_000 - 100 * 1010 * 1.001)
+
+
+def test_order_cancelled_when_no_open():
+    b = PaperBroker(3_000_000)
+    run_day(b, _TS("2024-01-04"), _bars({}), _cands("2024-01-04", {"11110": (3.0, 50.0, 1000.0)}), _P)
+    run_day(b, _TS("2024-01-05"), _bars({}), _cands("2024-01-05", {}), _P)
+    assert b.positions == {} and b.orders == []
+
+
+def test_fill_limited_by_cash():
+    b = PaperBroker(150_000)
+    b.orders = [{"code": "11110", "shares": 300, "atr": 50.0, "signal_date": "2024-01-04"}]
+    b.last_processed = "2024-01-04"
+    run_day(b, _TS("2024-01-05"), _bars({"11110": (1000, 1000, 1000, 1000, 1.0, 50.0)}), _cands("2024-01-05", {}), _P)
+    # 20% 上限 = 3 万円で 100 株未満 → 見送り（資産 15 万円の 20%）
+    assert b.positions == {}
+
+
+def test_stop_intraday_fills_at_stop():
+    b = _holding(stop=900.0)
+    run_day(b, _TS("2024-01-05"), _bars({"11110": (950, 960, 890, 940, 1.0, 20.0)}), _cands("2024-01-05", {}), _P)
+    assert b.positions == {}
+    assert b.trades[0]["exit_price"] == pytest.approx(900 * 0.999)
+    assert b.trades[0]["reason"] == "stop"
+
+
+def test_stop_gap_down_fills_at_open():
+    b = _holding(stop=900.0)
+    run_day(b, _TS("2024-01-05"), _bars({"11110": (850, 870, 840, 860, 1.0, 20.0)}), _cands("2024-01-05", {}), _P)
+    assert b.trades[0]["exit_price"] == pytest.approx(850 * 0.999)
+    assert b.trades[0]["pnl"] == pytest.approx(100 * (850 * 0.999 - 1000))
+
+
+def test_trailing_stop_only_rises():
+    b = _holding(stop=900.0)
+    run_day(b, _TS("2024-01-05"), _bars({"11110": (1000, 1200, 1000, 1150, 1.0, 20.0)}), _cands("2024-01-05", {}), _P)
+    assert b.positions["11110"]["stop"] == pytest.approx(1200 - 60)
+    # ATR が広がっても損切りラインは下げない
+    run_day(b, _TS("2024-01-09"), _bars({"11110": (1150, 1160, 1145, 1150, 1.0, 80.0)}), _cands("2024-01-09", {}), _P)
+    assert b.positions["11110"]["stop"] == pytest.approx(1140)
+
+
+def test_split_rescales_position():
+    b = _holding(stop=900.0, shares=100, entry=1000.0)
+    run_day(b, _TS("2024-01-05"), _bars({"11110": (505, 510, 500, 505, 0.5, 10.0)}), _cands("2024-01-05", {}), _P)
+    pos = b.positions["11110"]
+    assert pos["shares"] == 200
+    assert pos["entry_price"] == pytest.approx(500.0)
+    # 損切り 900 → 450 に換算（安値 500 で掛からない）→ 引け後に 高値 510 − ATR 10×3 = 480 へ引き上げ
+    assert pos["stop"] == pytest.approx(480.0)
+
+
+def test_same_day_is_not_processed_twice():
+    b = _holding(stop=900.0)
+    bars = _bars({"11110": (950, 960, 890, 940, 1.0, 20.0)})
+    run_day(b, _TS("2024-01-04"), bars, _cands("2024-01-04", {}), _P)   # 処理済みの日
+    assert "11110" in b.positions and b.trades == []
+
+
+def test_no_new_orders_when_not_allowed():
+    b = PaperBroker(3_000_000)
+    run_day(b, _TS("2024-01-04"), _bars({}), _cands("2024-01-04", {"11110": (3.0, 50.0, 1000.0)}), _P,
+            allow_new=False)
+    assert b.orders == []
+
+
+def test_broker_roundtrip(tmp_path):
+    b = _holding()
+    b.orders = [{"code": "22220", "shares": 100, "atr": 5.0, "signal_date": "2024-01-04"}]
+    path = tmp_path / "state.json"
+    b.save(path)
+    b2 = PaperBroker.load(path)
+    assert b2.to_dict() == b.to_dict()
