@@ -60,8 +60,10 @@ class PaperBroker:
                 pos[k] *= factor
         for o in self.orders:
             if o["code"] == code:
-                o["shares"] = int(round(o["shares"] / factor))
-                o["atr"] *= factor
+                if "shares" in o:
+                    o["shares"] = int(round(o["shares"] / factor))
+                if "atr" in o:
+                    o["atr"] *= factor
 
     # ── 評価 ────────────────────────────────────────────────────────────
     def equity(self) -> float:
