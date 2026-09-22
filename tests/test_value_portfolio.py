@@ -97,3 +97,23 @@ def test_not_processed_twice():
     run_value_day(b, _TS("2024-01-31"), _bars({}), _rank(["a"]), _P)
     run_value_day(b, _TS("2024-01-31"), _bars({}), _rank(["b"]), _P)
     assert [o["code"] for o in b.orders] == ["a"]
+
+
+def test_round_lot_skips_unaffordable_and_takes_next_rank():
+    """100 株単位: 100 株の代金が 1 銘柄の予算（資産 ÷ 保有数）を超える銘柄は飛ばして次の順位を買う。"""
+    p = ValuePortfolioParams(n_hold=2, exit_rank=4, lot=100)
+    b = PaperBroker(300_000)                      # 1 銘柄 15 万円
+    run_value_day(b, _TS("2024-01-31"), _bars({"a": (2000, 2000), "b": (900, 900), "c": (1400, 1400)}),
+                  _rank(["a", "b", "c"]), p)
+    assert [o["code"] for o in b.orders] == ["b", "c"]          # a は 100 株 20 万円で予算超過
+    run_value_day(b, _TS("2024-02-01"), _bars({"b": (900, 900), "c": (1450, 1450)}), None, p)
+    assert b.positions["b"]["shares"] == 100                  # 15 万 ÷ 901 = 166 → 100 株単位で 100
+    assert b.positions["c"]["shares"] == 100                  # 1 株 1451 × 100 = 14.5 万 ≦ 15 万
+
+
+def test_round_lot_allows_small_overshoot_at_open():
+    p = ValuePortfolioParams(n_hold=2, exit_rank=4, lot=100)
+    b = PaperBroker(300_000)
+    run_value_day(b, _TS("2024-01-31"), _bars({"a": (1450, 1450)}), _rank(["a"]), p)
+    run_value_day(b, _TS("2024-02-01"), _bars({"a": (1600, 1600)}), None, p)   # 16 万 = 予算の 1.07 倍
+    assert b.positions["a"]["shares"] == 100

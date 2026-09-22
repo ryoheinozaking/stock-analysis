@@ -188,6 +188,8 @@ def main():
     rankings = load_rankings(snaps)
     triggers = trigger_days(dates, rankings)
     print(f"読み込み {time.time() - t0:.0f} 秒: 月末の順位 {len(rankings)} か月 / 営業日 {len(dates)}", flush=True)
+    if "--lots" in sys.argv:
+        return compare_lots(prices, dates, bars, triggers)
 
     rows = []
     for name, (s, e) in PERIODS.items():
@@ -212,6 +214,32 @@ def main():
         nb = summary[(summary["variant"] == "main") & (summary["period"] == name)]
         b = nb[nb["exit_rank"] == BASE_EXIT].iloc[0]
         print(f"  {name}: " + " / ".join(f"{k}: {'OK' if ok else 'NG'}" for k, ok in _judge(b, nb).items()))
+
+
+# 銘柄数と売買単位の比較（--lots）: (名前, 保有数, 売買単位, 売る順位)
+LOT_VARIANTS = [
+    ("top20_s",      20, 1,   40),
+    ("top10_s",      10, 1,   20),
+    ("top10_s_x40",  10, 1,   40),
+    ("top10_100",    10, 100, 20),
+    ("top10_100_x40", 10, 100, 40),
+]
+
+
+def compare_lots(prices, dates, bars, triggers):
+    rows = []
+    for name, (s, e) in PERIODS.items():
+        for v, n, lot, ex in LOT_VARIANTS:
+            trades, equity = simulate_main(ValuePortfolioParams(n_hold=n, lot=lot, exit_rank=ex),
+                                           dates, bars, triggers, s, e)
+            rows.append(_row(trades, equity, prices, v, name, ex))
+            _save(trades, equity, v, name)
+    summary = pd.DataFrame(rows)
+    summary.to_csv(os.path.join(OUT, "summary_lots.csv"), index=False, encoding="utf-8-sig")
+    pd.set_option("display.width", 220)
+    cols = ["variant", "period", "exit_rank", "cagr", "topix_cagr", "profit_factor", "max_dd", "trades",
+            "win_rate", "avg_hold_days", "exposure"]
+    print(_fmt(summary)[cols].to_string(index=False))
 
 
 def _row(trades, equity, prices, variant, period, exit_rank):

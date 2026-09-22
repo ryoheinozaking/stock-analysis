@@ -24,6 +24,8 @@ class ValuePortfolioParams:
     exit_rank: int = 40       # この順位より下に落ちたら売る（余裕幅）
     slippage: float = 0.001   # 片道 0.1%
     delist_days: int = 14     # 株価がこの暦日数以上更新されなければ上場廃止とみなし、最後の終値で売る
+    lot: int = 1              # 売買単位。1 = 単元未満株（S株）、100 = 単元株
+    lot_overshoot: float = 1.1  # 単元株で、始値で 1 単元が予算をこの倍率まで超えても 1 単元は買う
 
 
 def _num(x) -> float:
@@ -70,7 +72,9 @@ def run_value_day(broker: PaperBroker, date, bars: pd.DataFrame, ranking: Option
         if code in broker.positions or not (op > 0):
             continue
         price = op * (1 + p.slippage)
-        shares = int(math.floor(min(target, broker.cash) / price))
+        shares = int(math.floor(min(target, broker.cash) / price / p.lot)) * p.lot
+        if shares == 0 and p.lot > 1 and price * p.lot <= min(broker.cash, target * p.lot_overshoot):
+            shares = p.lot
         if shares >= 1:
             broker.buy(code, shares, price, date, stop=0.0, high=op)
             broker.positions[code]["last_seen"] = ds
@@ -101,6 +105,10 @@ def run_value_day(broker: PaperBroker, date, bars: pd.DataFrame, ranking: Option
         sells = [c for c in broker.positions if rank.get(c, math.inf) > p.exit_rank and c not in pending_sells]
         keep = len(broker.positions) - len(sells) - len(pending_sells)
         buys = [c for c in ranking.sort_values("rank")["code"].astype(str) if c not in broker.positions]
+        if p.lot > 1:
+            # 単元株: 月末終値で 1 単元が 1 銘柄の予算を超える銘柄は飛ばし、次の順位を買う
+            budget = broker.equity() / p.n_hold
+            buys = [c for c in buys if c in has and 0 < _num(bars.at[c, "C"]) * p.lot <= budget]
         buys = buys[:max(p.n_hold - keep, 0)]
         broker.orders += [{"code": c, "side": "sell", "signal_date": ds, "rank": rank.get(c)} for c in sells]
         broker.orders += [{"code": c, "side": "buy", "signal_date": ds, "rank": rank[c]} for c in buys]
