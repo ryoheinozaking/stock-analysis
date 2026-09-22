@@ -66,6 +66,8 @@ cards = [
      "実トレードを記録・集計し、戦略別勝率・RSI別成績など自己分析データを蓄積します。"),
     ("pages/9_sector_rotation.py", "セクター回転を見る", "#f43f5e", "🔄", "セクター回転検知",
      "S33業種別の資金流入・鮮度・出来高急増で回転を検知し、JPX週次信用残で需給変化を確認できます。"),
+    ("pages/10_paper_trading.py", "ペーパー運用を見る", "#1f3a5f", "¥", "ペーパー運用",
+     "バリュー株 Top10 を仮想資金300万円で毎月入れ替え、実運用の前に成績と約定のずれを確かめます。"),
 ]
 
 for _row_start in range(0, len(cards), CARDS_PER_ROW):
@@ -90,6 +92,7 @@ st.markdown("""
 4. **ポートフォリオ**: SBI証券CSVをインポートして保有状況を可視化
 5. **トレードログ**: 実トレードを記録・集計して自己分析データを蓄積
 6. **セクター回転検知**: 業種別の資金流入・温度と週次信用残から市場の回転を確認
+7. **ペーパー運用**: バリュー株 Top10 の仮想売買（「データ更新」の後に自動で進む）
 
 ### データソース
 - **株価・財務データ**: [J-Quants API v2](https://jpx-jquants.com/)
@@ -107,6 +110,7 @@ st.sidebar.page_link("pages/3_disclosures.py", label="適時開示", icon="📰"
 st.sidebar.page_link("pages/4_portfolio.py", label="ポートフォリオ", icon="💹")
 st.sidebar.page_link("pages/6_trade_log.py", label="トレードログ", icon="📓")
 st.sidebar.page_link("pages/9_sector_rotation.py", label="セクター回転", icon="🔄")
+st.sidebar.page_link("pages/10_paper_trading.py", label="ペーパー運用")
 
 if st.session_state.get("selected_code"):
     st.sidebar.markdown("---")

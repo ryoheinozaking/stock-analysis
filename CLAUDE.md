@@ -110,7 +110,8 @@ stock_analysis/
 │   ├── 6_trade_log.py            # トレードログ（実トレード記録・戦略別勝率集計）
 │   ├── 7_pipeline_report.py      # パイプラインレポート（成長株/バリュー株モード切替）
 │   ├── 8_backtest_value.py       # バリュー株モード バックテスト（クロスセクション）
-│   └── 9_sector_rotation.py      # セクター回転検知（温度・ランキング・信用需給3タブ）
+│   ├── 9_sector_rotation.py      # セクター回転検知（温度・ランキング・信用需給3タブ）
+│   └── 10_paper_trading.py       # ペーパー運用（バリュー株 Top10・仮想資金300万円）
 │
 ├── services/
 │   ├── jquants_service.py        # J-Quants API v2 ラッパー（@st.cache_data付き）
@@ -122,7 +123,11 @@ stock_analysis/
 │   ├── pipeline_service.py       # パイプライン本体（ハードフィルタ→スコアリング→Claude分析）
 │   ├── backtest_value_service.py # バリュー株バックテスト（過去スナップショット再現）
 │   ├── rotation_service.py       # セクター回転（日次系列・出来高急増・鮮度・資金流入・温度）
-│   └── margin_service.py         # JPX週次信用残（PDF DL・パース・週次アーカイブ）
+│   ├── margin_service.py         # JPX週次信用残（PDF DL・パース・週次アーカイブ）
+│   ├── paper_broker.py           # 仮想口座（現金・保有・注文・約定・分割換算。実運用では証券会社版に差し替える）
+│   ├── value_portfolio.py        # バリュー株の1営業日の処理（月末入れ替え・上場廃止）
+│   ├── value_paper.py            # ペーパー運用の追いつき処理・月末判定（データ更新後に自動実行）
+│   └── breakout_*.py             # スイング戦略の検証用（不合格。再利用は検証のみ）
 │
 ├── components/
 │   ├── chart.py                  # Plotly OHLCVチャート（MA・BB・MACD・RSI・一目均衡表等）
@@ -377,6 +382,23 @@ CurPerType=='FY' に混入していた予想修正レコードの除外バグ（
   成長率は引き続きマイナス（rev_growth −0.04）= **成長率パラドックスは継続**
 - IC（250日）: PER −0.19〜−0.21 / PBR −0.19〜−0.22 と強い = **成長株の中でも割安なものが効く**（PEG 的な値段規律を支持）
 - α 対ユニバースは 60日 +4〜5% / 250日 +9% と対TOPIX より大きい（成長株ユニバース自体が TOPIX に負けている）
+
+#### 【2026-09-22】スイング戦略は不合格・バリュー株 Top10 をペーパー運用へ
+
+資金 300 万円の口座として日々の売買を再現するバックテスト（`services/paper_broker.py` + 1 営業日の処理）。
+- **スイング（TradingView 系テクニカル）は全滅**（前半 2022-02〜2024-12、TOPIX 年 +14.3%）:
+  ブレイクアウト順張り 年 +4.5%・PF 1.15、押し目買い A/B(+割安)/C(+上方修正) 年 +6.3/+8.2/+8.4%。
+  1 取引あたりの対 TOPIX 超過は t = 1.2〜1.5 で偶然と区別できない。割安・上方修正を足すと取引の質は上がる（PF 1.22→1.30→1.71）が、
+  現金が遊ぶ（C は投下率 37%）。過去のモメンタム系検証（`data/backtest_summary.csv`、20 日後 +0.4〜1.7% ≒ 相場全体）と同じ結論
+  = **値動きの形だけのシグナルに優位性は無い**。上方修正（予想純利益 +20% 以上）は唯一目立つが単独では弱い。
+  `scripts/breakout_backtest.py`（`--strategy pullback`）、結果は `data/breakout_backtest/`
+- **バリュー株を口座で運用**（`scripts/value_portfolio_backtest.py`、2022-07〜2026-09、TOPIX 年 +20.0%）:
+  Top20・S株・40 位で売る 年 +35.6% / **Top10・S株・20 位で売る 年 +42.9%（採用）** / Top10・100 株単位 年 +35.1%（資金の約 2 割が現金）。
+  5 年すべて TOPIX 超え、β 0.71、最大 DD −21.8%（2024-08-05。同期間 TOPIX −23.4%）。Top10 は Top20 を月 +0.60% 上回る（t = 2.89）。
+  スコア設計が同じ期間を見て決められているので、**実運用の期待上乗せは年 +5〜10%** に割り引く
+- ペーパー運用: `services/value_paper.py` / `pages/10_paper_trading.py`、状態は `data/paper/value_top10.json`（2026-09-18 開始）。
+  「データ更新」の後に自動で最新日まで進む。実運用への移行は最低 3 か月かつ 20 取引の後
+- 設計書: `docs/superpowers/specs/2026-09-22-breakout-paper-trading-design.md`・`2026-09-22-value-paper-trading-design.md`
 
 #### 参考【旧数値・2026-04-29 計測】（37スナップショット × 365日 fwd、データバグ込み）
 旧仕様 Top50 α+1.64% → PBR-heavy Top20 α+18.14%/勝率86.1% の比較で現行設計を決定した。
