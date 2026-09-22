@@ -32,6 +32,9 @@ data/valuation_audit/
 data/bulk/
 data/margin/
 data/tradingview/
+data/breakout_backtest/
+data/value_portfolio_backtest/
+data/paper/
 
 # バックアップ・アーカイブ
 backup/

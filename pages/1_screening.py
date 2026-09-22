@@ -253,6 +253,14 @@ if update_button:
             cache_df = fetch_all_stocks(market_codes=None, progress_callback=progress_callback)
             progress_bar.progress(1.0)
             cache_updated = get_cache_updated_at()
+            # ペーパー運用（始めている場合だけ）を最新日まで進める
+            try:
+                from services.value_paper import load_state as _paper_state, run_update as _paper_update
+                if _paper_state() is not None:
+                    _r = _paper_update(lambda m: log_area.write(m))
+                    st.write(f"ペーパー運用: {len(_r['processed'])} 日分を処理（処理済み {_r['last_processed']}）")
+            except Exception as _e:
+                st.warning(f"ペーパー運用の更新に失敗しました（データ更新は完了しています）: {_e}")
             status.update(label=f"✅ データ更新完了 ({len(cache_df)} 銘柄)", state="complete")
         except Exception as e:
             st.error(f"データ更新中にエラーが発生しました: {e}")
