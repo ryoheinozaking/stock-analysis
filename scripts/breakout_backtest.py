@@ -9,6 +9,10 @@
 
 期間は前半（ルール確定用）と後半（確定後に一度だけ確認）に分け、それぞれ新しい口座で回す。
 周辺の値: 高値期間 {40, 55, 80} × トレーリング倍率 {2, 3, 4}（初期損切りは ATR×2 で固定）。
+
+押し目買い（--strategy pullback、2026-09-22 追加）は結果を見る前に決めた 3 通りを同時に検証する:
+  A: テクニカルのみ / B: A + PBR がその日の対象銘柄の中央値以下 / C: A + 直近 60 日以内に予想純利益を 20% 以上上方修正
+周辺の値: トレーリング倍率 {2, 3, 4} × 保有上限 {40, 60, 80} 営業日（初期値は 3 と 60）。
 """
 import os
 import sys
@@ -23,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from services.breakout_engine import run_day                       # noqa: E402
 from services.breakout_strategy import (                             # noqa: E402
     BreakoutParams, build_candidates, compute_indicators, earnings_block_set, market_filter,
+    pbr_lower_half_set, revision_events, revision_window_set,
 )
 from services.paper_broker import PaperBroker                       # noqa: E402
 from services.split_adjust import normalize_close                   # noqa: E402
@@ -38,6 +43,8 @@ PERIODS = {
 }
 GRID_DAYS = [40, 55, 80]
 GRID_TRAIL = [2.0, 3.0, 4.0]
+GRID_HOLD = [40, 60, 80]
+PULLBACK_BASE = {"trail_atr": 3.0, "max_hold_days": 60}
 PRICE_COLS = ["Date", "Code", "O", "H", "L", "C", "Vo", "Va", "AdjFactor"]
 
 
@@ -54,7 +61,7 @@ def load_data():
     reit = set(fins.loc[dt.str.contains("REIT"), "Code"].astype(str))
     company_codes = set(fins.loc[stmt, "Code"].astype(str)) - reit
 
-    mktcap = pd.read_parquet(os.path.join(DATA, "valuation.parquet"), columns=["Date", "Code", "MktCap"])
+    mktcap = pd.read_parquet(os.path.join(DATA, "valuation.parquet"), columns=["Date", "Code", "MktCap", "PBR"])
     earnings = pd.read_parquet(os.path.join(DATA, "earnings_dates.parquet"))
     print(f"データ読み込み {time.time() - t:.0f} 秒: 株価 {len(prices):,} 行 / 会社 {len(company_codes):,}")
     return prices, company_codes, mktcap, earnings
@@ -133,8 +140,13 @@ def main():
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--periods", default="first", help="first / second / all をカンマ区切り")
-    periods = {k: PERIODS[k] for k in ap.parse_args().periods.split(",")}
+    ap.add_argument("--strategy", default="breakout", choices=["breakout", "pullback"])
+    ap.add_argument("--variants", default="A,B,C", help="押し目買いの型（A / B / C）")
+    args = ap.parse_args()
+    periods = {k: PERIODS[k] for k in args.periods.split(",")}
     os.makedirs(OUT, exist_ok=True)
+    if args.strategy == "pullback":
+        return main_pullback(periods, args.variants.split(","))
     prices, company_codes, mktcap, earnings = load_data()
     base = BreakoutParams()
 
@@ -173,6 +185,95 @@ def main():
     summary = pd.DataFrame(rows)
     summary.to_csv(os.path.join(OUT, f"summary_{'_'.join(periods)}.csv"), index=False, encoding="utf-8-sig")
     report(summary, base)
+
+
+def liquid_universe(ind: pd.DataFrame, mktcap: pd.DataFrame, company_codes, p: BreakoutParams) -> pd.DataFrame:
+    """その日の対象銘柄（会社・売買代金・時価総額の条件を満たす）の (Date, Code, PBR)。"""
+    u = ind.loc[ind["Code"].isin(company_codes) & (ind["turnover_avg"] >= p.min_turnover), ["Date", "Code"]]
+    mc = mktcap.copy()
+    mc["Date"] = pd.to_datetime(mc["Date"])
+    mc["Code"] = mc["Code"].astype(str)
+    u = u.merge(mc, on=["Date", "Code"], how="inner")
+    return u[u["MktCap"] >= p.min_mktcap_mn][["Date", "Code", "PBR"]]
+
+
+def main_pullback(periods: dict, variants):
+    prices, company_codes, mktcap, earnings = load_data()
+    base = BreakoutParams()
+    dates = [pd.Timestamp(d) for d in sorted(prices.loc[prices["Code"] == base.market_code, "Date"].unique())]
+    market_ok = market_filter(prices[prices["Code"] == base.market_code], base)
+    earn_block = earnings_block_set(earnings, dates, base.earnings_buffer_days)
+    ind = all_indicators(prices, base)
+    bars = build_bars(ind, min(v[0] for v in periods.values()))
+
+    t = time.time()
+    require = {"A": None}
+    if "B" in variants:
+        require["B"] = pbr_lower_half_set(liquid_universe(ind, mktcap, company_codes, base))
+    if "C" in variants:
+        fins = pd.read_parquet(os.path.join(DATA, "fins_cache.parquet"),
+                               columns=["Code", "DiscDate", "DocType", "CurFYEn", "FNP"])
+        require["C"] = revision_window_set(revision_events(fins, 0.20), dates, 60)
+    print(f"  割安・上方修正の集合 {time.time() - t:.0f} 秒")
+
+    rows = []
+    for v in variants:
+        cands = build_candidates(ind, mktcap, company_codes, market_ok, earn_block, base,
+                                 signal_col="pullback_signal", require=require[v])
+        cands_by_date = {d: g for d, g in cands.groupby("Date")}
+        print(f"  型 {v}: 買い候補 {len(cands):,} 件")
+        for trail in GRID_TRAIL:
+            for hold in GRID_HOLD:
+                p = replace(base, trail_atr=trail, max_hold_days=hold)
+                for name, (s, e) in periods.items():
+                    trades, equity = simulate(p, dates, bars, cands_by_date, s, e)
+                    st = stats(trades, equity)
+                    st.update({"variant": v, "period": name, "trail_atr": trail, "max_hold_days": hold,
+                               "topix_cagr": topix_cagr(prices, equity["date"].iloc[0], equity["date"].iloc[-1]),
+                               "start": equity["date"].iloc[0], "end": equity["date"].iloc[-1]})
+                    rows.append(st)
+                    if trail == PULLBACK_BASE["trail_atr"] and hold == PULLBACK_BASE["max_hold_days"]:
+                        trades.to_csv(os.path.join(OUT, f"pullback_{v}_trades_{name}.csv"),
+                                      index=False, encoding="utf-8-sig")
+                        equity.to_csv(os.path.join(OUT, f"pullback_{v}_equity_{name}.csv"),
+                                      index=False, encoding="utf-8-sig")
+    summary = pd.DataFrame(rows)
+    summary.to_csv(os.path.join(OUT, f"pullback_summary_{'_'.join(periods)}.csv"), index=False, encoding="utf-8-sig")
+    report_pullback(summary)
+
+
+def _judge(b, neighbors) -> dict:
+    return {
+        "年率 > TOPIX": b["cagr"] > b["topix_cagr"],
+        "PF >= 1.3": b["profit_factor"] >= 1.3,
+        "最大DD <= 20%": b["max_dd"] >= -0.20,
+        "取引数 >= 50": b["trades"] >= 50,
+        "周辺の値で PF >= 1.1": (neighbors["profit_factor"] >= 1.1).all(),
+    }
+
+
+def _fmt(summary: pd.DataFrame) -> pd.DataFrame:
+    fmt = summary.copy()
+    for c in ["cagr", "topix_cagr", "max_dd", "win_rate", "avg_win_pct", "avg_loss_pct", "exposure"]:
+        fmt[c] = (fmt[c] * 100).round(1)
+    for c in ["profit_factor", "trades_per_month", "avg_hold_days"]:
+        fmt[c] = fmt[c].round(2)
+    return fmt
+
+
+def report_pullback(summary: pd.DataFrame):
+    pd.set_option("display.width", 220)
+    cols = ["variant", "period", "trail_atr", "max_hold_days", "cagr", "topix_cagr", "profit_factor", "max_dd",
+            "trades", "trades_per_month", "win_rate", "avg_win_pct", "avg_loss_pct", "avg_hold_days", "exposure"]
+    print(_fmt(summary)[cols].sort_values(["variant", "period", "trail_atr", "max_hold_days"]).to_string(index=False))
+    print("\n合格判定（初期値: トレーリング ATR×3・保有上限 60 日）")
+    for v in summary["variant"].unique():
+        for name in [n for n in ["first", "second"] if n in set(summary["period"])]:
+            nb = summary[(summary["variant"] == v) & (summary["period"] == name)]
+            b = nb[(nb["trail_atr"] == PULLBACK_BASE["trail_atr"])
+                   & (nb["max_hold_days"] == PULLBACK_BASE["max_hold_days"])].iloc[0]
+            mark = " / ".join(f"{k}: {'OK' if ok else 'NG'}" for k, ok in _judge(b, nb).items())
+            print(f"  型 {v} {name}: {mark}")
 
 
 def report(summary: pd.DataFrame, base: BreakoutParams):

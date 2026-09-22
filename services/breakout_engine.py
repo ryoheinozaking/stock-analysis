@@ -5,11 +5,12 @@
 設計書: docs/superpowers/specs/2026-09-22-breakout-paper-trading-design.md
 
 D 日の日足がそろった後に呼ぶ。順序:
-  1. 分割の反映  2. 前日注文を始値で約定  3. 損切り判定  4. トレーリング引き上げ
+  1. 分割の反映  2. 前日注文を始値で約定  3. 損切り判定（3b. 保有上限で大引け売り）  4. トレーリング引き上げ
   5. 終値で資産評価  6. D 日の引けの候補から翌営業日の注文を作る
 """
 import math
 
+import numpy as np
 import pandas as pd
 
 from services.breakout_strategy import BreakoutParams
@@ -76,6 +77,15 @@ def run_day(broker: PaperBroker, date, bars: pd.DataFrame, candidates: pd.DataFr
         if lo <= pos["stop"]:
             px = min(op, pos["stop"]) if op > 0 else pos["stop"]
             broker.sell(code, px * (1 - p.slippage), date, "stop")
+
+    # 3b. 保有の上限に達したら大引けで売る
+    if p.max_hold_days:
+        d = date.strftime("%Y-%m-%d")
+        for code in list(broker.positions):
+            pos = broker.positions[code]
+            cl = _num(bars.at[code, "C"]) if code in has else float("nan")
+            if cl > 0 and np.busday_count(pos["entry_date"], d) >= p.max_hold_days:
+                broker.sell(code, cl * (1 - p.slippage), date, "time")
 
     # 4. トレーリング引き上げ（上げるのみ）と終値の更新
     for code, pos in broker.positions.items():

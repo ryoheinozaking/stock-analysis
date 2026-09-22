@@ -248,3 +248,92 @@ def test_broker_roundtrip(tmp_path):
     b.save(path)
     b2 = PaperBroker.load(path)
     assert b2.to_dict() == b.to_dict()
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  押し目買い（2026-09-22 追加）: 反発判定・保有上限・上方修正・割安
+# ════════════════════════════════════════════════════════════════════════
+
+from services.breakout_strategy import (                  # noqa: E402
+    pbr_lower_half_set, revision_events, revision_window_set,
+)
+
+
+def _uptrend_pullback_rebound(n=300, rebound=True):
+    """上昇トレンド → 50 日線まで 5 日下落 → 最終日に前日高値を上抜けて反発。"""
+    dates = pd.bdate_range("2023-01-02", periods=n)
+    c = 1000 * 1.002 ** np.arange(n)
+    c = c.copy()
+    base = c[n - 7]
+    for i, k in enumerate(range(n - 6, n - 1)):          # 5 日かけて約 −5%（50 日線の少し下）
+        c[k] = base * (1 - 0.010 * (i + 1))
+    c[n - 1] = c[n - 2] * (1.03 if rebound else 0.995)
+    df = pd.DataFrame({"Date": dates, "Code": "99990", "O": c, "H": c * 1.005, "L": c * 0.995,
+                       "C": c, "Vo": 100_000.0, "AdjFactor": 1.0})
+    df["Va"] = df["C"] * df["Vo"]
+    return df
+
+
+def test_pullback_signal_fires_on_rebound():
+    ind = compute_indicators(_uptrend_pullback_rebound(), BreakoutParams())
+    assert bool(ind["pullback_signal"].iloc[-1]) is True
+    assert not ind["pullback_signal"].iloc[-30:-1].any()
+
+
+def test_pullback_signal_needs_rebound():
+    ind = compute_indicators(_uptrend_pullback_rebound(rebound=False), BreakoutParams())
+    assert bool(ind["pullback_signal"].iloc[-1]) is False
+
+
+def test_time_exit_at_close():
+    p = BreakoutParams(max_hold_days=3)
+    b = _holding(stop=900.0)                                     # 2024-01-04（木）買付
+    for d in ["2024-01-05", "2024-01-08"]:
+        run_day(b, _TS(d), _bars({"11110": (1000, 1010, 995, 1005, 1.0, 20.0)}), _cands(d, {}), p)
+    assert "11110" in b.positions
+    run_day(b, _TS("2024-01-09"), _bars({"11110": (1000, 1010, 995, 1008, 1.0, 20.0)}), _cands("2024-01-09", {}), p)
+    assert b.positions == {}
+    assert b.trades[0]["reason"] == "time"
+    assert b.trades[0]["exit_price"] == pytest.approx(1008 * 0.999)
+
+
+def test_revision_events_same_fy_and_threshold():
+    f = pd.DataFrame({
+        "Code":     ["11110"] * 4 + ["22220"] * 2,
+        "DiscDate": ["2023-05-10", "2023-08-10", "2023-09-01", "2023-11-10", "2023-08-10", "2023-09-01"],
+        "DocType":  ["FYFinancialStatements_Consolidated_JP", "1QFinancialStatements_Consolidated_JP",
+                     "EarnForecastRevision", "2QFinancialStatements_Consolidated_JP",
+                     "1QFinancialStatements_Consolidated_JP", "EarnForecastRevision"],
+        "CurFYEn":  ["2023-03-31", "2024-03-31", "2024-03-31", "2024-03-31", "2024-03-31", "2024-03-31"],
+        "FNP":      [999.0, 100.0, 125.0, 130.0, 100.0, 110.0],
+    })
+    ev = revision_events(f, threshold=0.20)
+    # 11110: 100 → 125（+25%）が上方修正。125 → 130 は +4% で対象外。本決算（旧年度）は比較に使わない
+    # 22220: +10% で対象外
+    assert list(zip(ev["Code"], ev["DiscDate"].dt.strftime("%Y-%m-%d"))) == [("11110", "2023-09-01")]
+
+
+def test_revision_events_ignore_loss_base():
+    f = pd.DataFrame({
+        "Code": ["11110", "11110"], "DiscDate": ["2023-08-10", "2023-09-01"],
+        "DocType": ["1QFinancialStatements_Consolidated_JP", "EarnForecastRevision"],
+        "CurFYEn": ["2024-03-31", "2024-03-31"], "FNP": [-100.0, 50.0],
+    })
+    assert revision_events(f, threshold=0.20).empty
+
+
+def test_revision_window_set():
+    ev = pd.DataFrame({"Code": ["11110"], "DiscDate": [_TS("2023-09-01")]})
+    td = pd.bdate_range("2023-08-01", "2023-12-29")
+    s = revision_window_set(ev, td, window_days=60)
+    assert ("11110", _TS("2023-09-01")) in s
+    assert ("11110", _TS("2023-10-31")) in s
+    assert ("11110", _TS("2023-11-01")) not in s
+    assert ("11110", _TS("2023-08-31")) not in s
+
+
+def test_pbr_lower_half_set():
+    u = pd.DataFrame({"Date": [_TS("2024-01-04")] * 4, "Code": ["a", "b", "c", "d"],
+                      "PBR": [0.5, 1.0, 2.0, np.nan]})
+    s = pbr_lower_half_set(u)
+    assert s == {("a", _TS("2024-01-04")), ("b", _TS("2024-01-04"))}

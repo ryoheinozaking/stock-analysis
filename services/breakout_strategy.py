@@ -9,7 +9,7 @@
 - 売買は「その日の生の株価」で行うため、ATR は atr_raw = ATR(正規化) ÷ cum_factor でその日のスケールに戻す
 """
 from dataclasses import dataclass
-from typing import Iterable, Set, Tuple
+from typing import Iterable, Optional, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -39,6 +39,9 @@ class BreakoutParams:
     earnings_buffer_days: int = 3    # 決算発表予定日まで 3 営業日以内なら買わない
     slippage: float = 0.001          # 片道 0.1%
     market_code: str = "13060"       # TOPIX 連動 ETF
+    max_hold_days: Optional[int] = None   # 保有の上限（営業日）。到達日の大引けで売る
+    pullback_lookback: int = 5       # 押し目: 直近 5 日の安値が
+    pullback_touch: float = 1.02     #         50 日線 × 1.02 以下まで下げた
 
 
 def compute_indicators(cp: pd.DataFrame, p: BreakoutParams) -> pd.DataFrame:
@@ -65,8 +68,11 @@ def compute_indicators(cp: pd.DataFrame, p: BreakoutParams) -> pd.DataFrame:
     tr = pd.concat([nh - nl, (nh - prev_c).abs(), (nl - prev_c).abs()], axis=1).max(axis=1)
     atr_norm = tr.rolling(p.atr_days).mean()
 
-    tech = ((nc > ma_fast) & (ma_fast > ma_slow) & (ma_slow > ma_slow_prev)
-            & (nc > high_prev) & (vol_ratio >= p.vol_mult))
+    uptrend = (nc > ma_slow) & (ma_fast > ma_slow) & (ma_slow > ma_slow_prev)
+    tech = uptrend & (nc > ma_fast) & (nc > high_prev) & (vol_ratio >= p.vol_mult)
+    # 押し目買い: 上昇トレンド中に 50 日線付近まで下げ、終値が前日高値と 50 日線を上回って反発
+    touched = nl.rolling(p.pullback_lookback).min() <= ma_fast * p.pullback_touch
+    pullback = uptrend & touched & (nc > nh.shift(1)) & (nc > ma_fast)
 
     return pd.DataFrame({
         "Date": pd.to_datetime(cp["Date"]),
@@ -80,6 +86,7 @@ def compute_indicators(cp: pd.DataFrame, p: BreakoutParams) -> pd.DataFrame:
         "vol_ratio": vol_ratio,
         "turnover_avg": pd.to_numeric(cp["Va"], errors="coerce").rolling(p.turnover_days).mean(),
         "tech_signal": tech.fillna(False).astype(bool),
+        "pullback_signal": pullback.fillna(False).astype(bool),
     })
 
 
@@ -125,16 +132,60 @@ def earnings_block_set(earnings: pd.DataFrame, trading_dates: Iterable,
     return out
 
 
+def revision_events(fins: pd.DataFrame, threshold: float = 0.20) -> pd.DataFrame:
+    """同じ年度の会社予想の純利益（FNP）を threshold 以上引き上げた開示 (Code, DiscDate)。
+
+    純利益は株数に依存しないので分割でずれない。本決算の短信は CurFYEn が終わった年度なので比較に使わない。
+    前回の予想が 0 以下（赤字予想）からの変化は率が意味を持たないので対象外。
+    """
+    f = fins[["Code", "DiscDate", "DocType", "CurFYEn", "FNP"]].copy()
+    f = f[~f["DocType"].astype(str).str.startswith("FYFinancialStatements")]
+    f["FNP"] = pd.to_numeric(f["FNP"], errors="coerce")
+    f["DiscDate"] = pd.to_datetime(f["DiscDate"], errors="coerce")
+    f = f.dropna(subset=["FNP", "DiscDate", "CurFYEn"])
+    f["Code"] = f["Code"].astype(str)
+    f = f.sort_values("DiscDate").drop_duplicates(["Code", "CurFYEn", "DiscDate"], keep="last")
+    f["prev"] = f.groupby(["Code", "CurFYEn"])["FNP"].shift(1)
+    ev = f[(f["prev"] > 0) & (f["FNP"] / f["prev"] - 1 >= threshold)]
+    return ev[["Code", "DiscDate"]].reset_index(drop=True)
+
+
+def revision_window_set(events: pd.DataFrame, trading_dates: Iterable,
+                        window_days: int = 60) -> Set[Tuple[str, pd.Timestamp]]:
+    """上方修正の開示日から window_days 暦日以内の (銘柄, 営業日) の集合。"""
+    td = pd.DatetimeIndex(sorted(pd.to_datetime(list(trading_dates))))
+    out: Set[Tuple[str, pd.Timestamp]] = set()
+    for code, d in zip(events["Code"].astype(str), pd.to_datetime(events["DiscDate"])):
+        lo = td.searchsorted(d, side="left")
+        hi = td.searchsorted(d + pd.Timedelta(days=window_days), side="right")
+        for i in range(lo, hi):
+            out.add((code, td[i]))
+    return out
+
+
+def pbr_lower_half_set(universe: pd.DataFrame) -> Set[Tuple[str, pd.Timestamp]]:
+    """その日の対象銘柄（Date, Code, PBR）の中で PBR が中央値以下の (銘柄, 日)。PBR が無い・0 以下は除く。"""
+    u = universe.copy()
+    u["PBR"] = pd.to_numeric(u["PBR"], errors="coerce")
+    u = u[u["PBR"] > 0]
+    med = u.groupby("Date")["PBR"].transform("median")
+    u = u[u["PBR"] <= med]
+    return set(zip(u["Code"].astype(str), pd.to_datetime(u["Date"])))
+
+
 def build_candidates(ind: pd.DataFrame, mktcap: pd.DataFrame, company_codes: Iterable[str],
                      market_ok: pd.Series, earn_block: Set[Tuple[str, pd.Timestamp]],
-                     p: BreakoutParams) -> pd.DataFrame:
+                     p: BreakoutParams, signal_col: str = "tech_signal",
+                     require: Optional[Set[Tuple[str, pd.Timestamp]]] = None) -> pd.DataFrame:
     """買い条件をすべて満たした (Date, Code, vol_ratio, atr_raw, C) を返す。
 
     ind: compute_indicators を全銘柄分つなげたもの
     mktcap: (Date, Code, MktCap[百万円])。その日の値が無い銘柄は時価総額条件を満たさない扱い
     company_codes: 対象にする銘柄（バックテスト = 決算短信のある会社、ペーパー運用 = プライム）
+    signal_col: "tech_signal"（ブレイクアウト）/ "pullback_signal"（押し目買い）
+    require: 指定すると、この (銘柄, 日) の集合に入る候補だけ残す（割安・上方修正の条件）
     """
-    c = ind[ind["tech_signal"]].copy()
+    c = ind[ind[signal_col]].copy()
     c = c[c["Code"].isin(set(company_codes)) & (c["turnover_avg"] >= p.min_turnover)]
     mc = mktcap[["Date", "Code", "MktCap"]].copy()
     mc["Date"] = pd.to_datetime(mc["Date"])
@@ -144,6 +195,9 @@ def build_candidates(ind: pd.DataFrame, mktcap: pd.DataFrame, company_codes: Ite
     c = c[c["Date"].map(market_ok).fillna(False).astype(bool)]
     if earn_block:
         keep = [(cd, d) not in earn_block for cd, d in zip(c["Code"], c["Date"])]
+        c = c[np.array(keep, dtype=bool)]
+    if require is not None:
+        keep = [(cd, d) in require for cd, d in zip(c["Code"], c["Date"])]
         c = c[np.array(keep, dtype=bool)]
     c = c[c["atr_raw"] > 0]
     return (c[["Date", "Code", "vol_ratio", "atr_raw", "C"]]
